@@ -75,7 +75,7 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
         }
     }
 
-    println!(
+    log::info!(
         "found {} repositories with {} duplicates",
         repositories.len(),
         duplicates.len()
