@@ -41,12 +41,6 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
     let (repositories, irrelevant) = local(&params.directory, 0, params.depth - 1)?;
     let duplicates = find_duplicates(&repositories);
 
-    log::info!(
-        "found {} repositories with {} duplicates",
-        repositories.len(),
-        duplicates.len()
-    );
-
     if params.print_output {
         println!("repositories:");
         for e in &repositories {
@@ -76,10 +70,16 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
                 .open(output)?,
         );
 
-        for e in repositories {
+        for e in &repositories {
             writeln!(output, "{}", e.remote_url)?;
         }
     }
+
+    println!(
+        "found {} repositories with {} duplicates",
+        repositories.len(),
+        duplicates.len()
+    );
 
     Ok(())
 }
