@@ -1,6 +1,5 @@
-use std::path::PathBuf;
-
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 mod clone;
 mod scan;
@@ -14,21 +13,6 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
-}
-
-#[derive(Args, Debug)]
-struct ScanParams {
-    /// Directory to scan
-    #[arg(short, long)]
-    directory: PathBuf,
-
-    /// Output file
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// How deep subdirectories to scan
-    #[arg(long, default_value = "2")]
-    depth: usize,
 }
 
 #[derive(Args, Debug)]
@@ -61,7 +45,7 @@ struct CloneParams {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Scan local filesystem for repositories
-    Scan(ScanParams),
+    Scan(scan::ScanParams),
 
     /// Clone repositories
     Clone(CloneParams),

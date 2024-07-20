@@ -1,23 +1,61 @@
-use std::fs;
-use std::path::Path;
-
+use clap::Args;
 use git2::Repository;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::{collections::HashMap, fs};
 
-pub fn scan(params: crate::ScanParams) -> anyhow::Result<()> {
+#[derive(Args, Debug)]
+pub struct ScanParams {
+    /// Directory to scan
+    #[arg(short, long)]
+    directory: PathBuf,
+
+    /// Output file
+    #[arg(short, long)]
+    output_file: Option<PathBuf>,
+
+    /// Print output
+    #[arg(long)]
+    print_output: bool,
+
+    /// Print duplicates
+    #[arg(long)]
+    print_duplicates: bool,
+
+    /// How deep subdirectories to scan
+    #[arg(long, default_value = "2")]
+    depth: usize,
+}
+
+#[derive(Clone)]
+struct Entry {
+    path: PathBuf,
+    remote_url: String,
+}
+
+pub fn scan(params: ScanParams) -> anyhow::Result<()> {
     let repositories = local(&params.directory, 0, params.depth - 1)?;
-    let duplicates = repositories.len()
-        - repositories
-            .iter()
-            .collect::<std::collections::HashSet<_>>()
-            .len();
+    let duplicates = find_duplicates(&repositories);
 
     log::info!(
-        "found {} repositories with {duplicates} duplicates",
-        repositories.len()
+        "found {} repositories with {} duplicates",
+        repositories.len(),
+        duplicates.len()
     );
 
-    if let Some(output) = &params.output {
+    if params.print_output {
+        for e in &repositories {
+            println!("{}", e.remote_url);
+        }
+    }
+
+    if params.print_duplicates {
+        for e in &duplicates {
+            println!("{} ({})", e.remote_url, e.path.display());
+        }
+    }
+
+    if let Some(output) = &params.output_file {
         let mut output = io::BufWriter::new(
             fs::OpenOptions::new()
                 .create_new(true)
@@ -25,15 +63,15 @@ pub fn scan(params: crate::ScanParams) -> anyhow::Result<()> {
                 .open(output)?,
         );
 
-        for url in repositories {
-            writeln!(output, "{}", url)?;
+        for e in repositories {
+            writeln!(output, "{}", e.remote_url)?;
         }
     }
 
     Ok(())
 }
 
-fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<Vec<String>> {
+fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<Vec<Entry>> {
     log::trace!(
         "scanning {}... (depth: {current_depth})",
         path.as_os_str().to_string_lossy()
@@ -100,7 +138,10 @@ fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<
 
                 log::trace!("found repository remote: {path_string} ({url})");
 
-                urls.push(url);
+                urls.push(Entry {
+                    path: d.path(),
+                    remote_url: url,
+                });
             }
         }
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
@@ -119,4 +160,21 @@ fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<
     }
 
     Ok(urls)
+}
+
+fn find_duplicates(entries: &[Entry]) -> Vec<Entry> {
+    let mut occurrences = HashMap::new();
+
+    for e in entries {
+        occurrences
+            .entry(e.remote_url.clone())
+            .and_modify(|o: &mut Vec<Entry>| o.push(e.clone()))
+            .or_insert(vec![e.clone()]);
+    }
+
+    occurrences
+        .into_iter()
+        .filter_map(|(_, v)| if v.len() > 1 { Some(v) } else { None })
+        .flatten()
+        .collect()
 }
