@@ -22,6 +22,10 @@ pub struct ScanParams {
     #[arg(long)]
     print_duplicates: bool,
 
+    /// Print irrelevant
+    #[arg(long)]
+    print_irrelevant: bool,
+
     /// How deep subdirectories to scan
     #[arg(long, default_value = "2")]
     depth: usize,
@@ -34,7 +38,7 @@ struct Entry {
 }
 
 pub fn scan(params: ScanParams) -> anyhow::Result<()> {
-    let repositories = local(&params.directory, 0, params.depth - 1)?;
+    let (repositories, irrelevant) = local(&params.directory, 0, params.depth - 1)?;
     let duplicates = find_duplicates(&repositories);
 
     log::info!(
@@ -44,14 +48,23 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
     );
 
     if params.print_output {
+        println!("repositories:");
         for e in &repositories {
             println!("{}", e.remote_url);
         }
     }
 
     if params.print_duplicates {
+        println!("duplicates:");
         for e in &duplicates {
             println!("{} ({})", e.remote_url, e.path.display());
+        }
+    }
+
+    if params.print_irrelevant {
+        println!("irrelevant:");
+        for i in &irrelevant {
+            println!("{}", i.display());
         }
     }
 
@@ -71,13 +84,18 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<Vec<Entry>> {
+fn local(
+    path: &Path,
+    current_depth: usize,
+    max_depth: usize,
+) -> anyhow::Result<(Vec<Entry>, Vec<PathBuf>)> {
     log::trace!(
         "scanning {}... (depth: {current_depth})",
         path.as_os_str().to_string_lossy()
     );
 
     let mut urls = vec![];
+    let mut irrelevant = vec![];
 
     match fs::read_dir(path) {
         Ok(entries) => {
@@ -124,9 +142,14 @@ fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<
                                 log::trace!(
                                     "'{path_string}' is not a git repository, recursing into it..."
                                 );
-                                urls.append(&mut local(&path, current_depth + 1, max_depth)?);
+
+                                let (mut u, mut i) = local(&path, current_depth + 1, max_depth)?;
+
+                                urls.append(&mut u);
+                                irrelevant.append(&mut i);
                             } else {
                                 log::warn!("'{path_string}' is not a git repository");
+                                irrelevant.push(d.path());
                             }
                         } else {
                             anyhow::bail!("failed to open repository: {path_string}: {e}");
@@ -149,7 +172,7 @@ fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<
                 "access denied to directory '{}', skipping...",
                 path.as_os_str().to_string_lossy()
             );
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
         Err(e) => {
             anyhow::bail!(
@@ -159,7 +182,7 @@ fn local(path: &Path, current_depth: usize, max_depth: usize) -> anyhow::Result<
         }
     }
 
-    Ok(urls)
+    Ok((urls, irrelevant))
 }
 
 fn find_duplicates(entries: &[Entry]) -> Vec<Entry> {
