@@ -27,7 +27,7 @@ pub struct ScanParams {
     print_irrelevant: bool,
 
     /// How deep subdirectories to scan
-    #[arg(long, default_value = "2")]
+    #[arg(long, default_value = "3")]
     depth: usize,
 }
 
@@ -105,6 +105,7 @@ fn local(
 
                 if !d.file_type()?.is_dir() {
                     log::warn!("'{path_string}' is not a directory, skipping...");
+                    irrelevant.push(d.path());
                     continue;
                 }
 
@@ -149,7 +150,6 @@ fn local(
                                 irrelevant.append(&mut i);
                             } else {
                                 log::warn!("'{path_string}' is not a git repository");
-                                irrelevant.push(d.path());
                             }
                         } else {
                             anyhow::bail!("failed to open repository: {path_string}: {e}");
