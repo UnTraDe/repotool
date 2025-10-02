@@ -1,10 +1,11 @@
 // ==UserScript==
-// @name         Check GitHub Repo Archive
+// @name         Check Repo Archive
 // @namespace    http://tampermonkey.net/
-// @version      0.1
-// @description  Checks if the current GitHub repository is in the archive
+// @version      0.2
+// @description  Checks if the current GitHub or Hugging Face repository is in the archive
 // @author       You
 // @match        https://github.com/*/*
+// @match        https://huggingface.co/*
 // @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
@@ -16,6 +17,16 @@ function transformGitHubUrl(url) {
   const repo = pathSegments[2];
 
   return `${parsedUrl.protocol}//${parsedUrl.host}/${org}/${repo}`;
+}
+
+function transformHuggingfaceUrl(url) {
+  const parsedUrl = new URL(url);
+  const pathname = parsedUrl.pathname;
+  const pathSegments = pathname.split("/");
+  const org = pathSegments[1];
+  const repo = pathSegments[2];
+
+  return `${org}/${repo}`;
 }
 
 function notify(res) {
@@ -32,20 +43,32 @@ const cache = new Map();
   "use strict";
 
   async function checkRepoInArchive(url) {
-    url = transformGitHubUrl(url);
-    const apiUrl = "http://127.0.0.1:8081/has_git_repo";
+    const hostname = new URL(url).hostname;
+    let transformedUrl, apiUrl, requestData;
 
-    if (cache.has(url)) {
-      const cached = cache.get(url);
+    if (hostname === "github.com") {
+      transformedUrl = transformGitHubUrl(url);
+      apiUrl = "http://127.0.0.1:8081/has_git_repo";
+      requestData = JSON.stringify({ url: transformedUrl });
+    } else if (hostname === "huggingface.co") {
+      transformedUrl = transformHuggingfaceUrl(url);
+      apiUrl = "http://127.0.0.1:8081/has_huggingface_repo";
+      requestData = JSON.stringify({ repo: transformedUrl });
+    } else {
+      return;
+    }
+
+    if (cache.has(transformedUrl)) {
+      const cached = cache.get(transformedUrl);
 
       if (cached !== null) {
-        notify(cache.get(url));
+        notify(cache.get(transformedUrl));
       }
 
       return;
     }
 
-    cache.set(url, null);
+    cache.set(transformedUrl, null);
 
     GM_xmlhttpRequest({
       method: "POST",
@@ -53,12 +76,12 @@ const cache = new Map();
       headers: {
         "Content-Type": "application/json",
       },
-      data: JSON.stringify({ url }),
+      data: requestData,
       onload: (response) => {
         if (response.status === 200) {
           const result = JSON.parse(response.responseText);
           notify(result);
-          cache.set(url, result);
+          cache.set(transformedUrl, result);
         } else {
           console.error("Error checking repository:", response.statusText);
         }
