@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod clone;
+mod hash;
 mod scan;
+mod serve;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -21,6 +23,9 @@ enum Commands {
 
     /// Clone repositories
     Clone(clone::CloneParams),
+
+    Hash(hash::HashParams),
+    Serve(serve::ServeParams),
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -50,5 +55,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Scan(params) => scan::scan(params),
         Commands::Clone(params) => clone::clone(params),
+        Commands::Hash(hash) => hash::run(hash),
+        Commands::Serve(serve) => serve::run(serve),
     }
 }
