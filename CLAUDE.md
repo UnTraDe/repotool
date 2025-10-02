@@ -9,6 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and Test Commands
 
 ```bash
+# to add a dependency use: (instead of editing Cargo.toml manually)
+cargo add <dependency>
+
 # Make sure there are no clippy warnings with
 cargo clippy
 

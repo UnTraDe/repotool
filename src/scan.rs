@@ -35,6 +35,9 @@ pub struct ScanParams {
 struct Entry {
     path: PathBuf,
     remote_url: String,
+    last_commit_hash: String,
+    last_commit_date: String,
+    last_repo_fetch: String,
 }
 
 pub fn scan(params: ScanParams) -> anyhow::Result<()> {
@@ -71,7 +74,20 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
         );
 
         for e in &repositories {
-            writeln!(output, "{}", e.remote_url)?;
+            let relative_path = e
+                .path
+                .strip_prefix(&params.directory)
+                .unwrap_or(&e.path)
+                .display();
+            writeln!(
+                output,
+                "{},{},{},{},{}",
+                e.remote_url,
+                relative_path,
+                e.last_commit_hash,
+                e.last_commit_date,
+                e.last_repo_fetch
+            )?;
         }
     }
 
@@ -109,7 +125,7 @@ fn local(
                     continue;
                 }
 
-                let url = match Repository::open(d.path()) {
+                let entry = match Repository::open(d.path()) {
                     Ok(repo) => {
                         log::trace!("found repository: {path_string}");
                         let remotes = repo
@@ -128,13 +144,57 @@ fn local(
                             continue;
                         };
 
-                        if let Some(url) = repo.find_remote(&remote_name)?.url() {
+                        let url = if let Some(url) = repo.find_remote(&remote_name)?.url() {
                             url.to_owned()
                         } else {
                             log::error!(
-                        "no url found for remote '{remote_name}' at '{path_string}', skipping..."
-                    );
+                                "no url found for remote '{remote_name}' at '{path_string}', skipping..."
+                            );
                             continue;
+                        };
+
+                        // Get HEAD commit info (for bare repos, resolve HEAD reference)
+                        let (commit_hash, commit_date) = match repo.revparse_single("HEAD") {
+                            Ok(obj) => {
+                                if let Ok(commit) = obj.peel_to_commit() {
+                                    let hash = commit.id().to_string();
+                                    let commit_time = commit.time();
+                                    let date =
+                                        chrono::DateTime::from_timestamp(commit_time.seconds(), 0)
+                                            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                            .unwrap_or_else(|| "unknown".to_string());
+                                    (hash, date)
+                                } else {
+                                    ("unknown".to_string(), "unknown".to_string())
+                                }
+                            }
+                            Err(_) => ("unknown".to_string(), "unknown".to_string()),
+                        };
+
+                        // Get last fetch time from FETCH_HEAD
+                        let fetch_head_path = d.path().join("FETCH_HEAD");
+                        let last_fetch = if fetch_head_path.exists() {
+                            fs::metadata(&fetch_head_path)
+                                .ok()
+                                .and_then(|metadata| metadata.modified().ok())
+                                .and_then(|modified| {
+                                    modified.duration_since(std::time::UNIX_EPOCH).ok()
+                                })
+                                .and_then(|duration| {
+                                    chrono::DateTime::from_timestamp(duration.as_secs() as i64, 0)
+                                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                })
+                                .unwrap_or_else(|| "unknown".to_string())
+                        } else {
+                            "never".to_string()
+                        };
+
+                        Entry {
+                            path: d.path(),
+                            remote_url: url,
+                            last_commit_hash: commit_hash,
+                            last_commit_date: commit_date,
+                            last_repo_fetch: last_fetch,
                         }
                     }
                     Err(e) => {
@@ -159,12 +219,12 @@ fn local(
                     }
                 };
 
-                log::trace!("found repository remote: {path_string} ({url})");
+                log::trace!(
+                    "found repository remote: {path_string} ({})",
+                    entry.remote_url
+                );
 
-                urls.push(Entry {
-                    path: d.path(),
-                    remote_url: url,
-                });
+                urls.push(entry);
             }
         }
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
