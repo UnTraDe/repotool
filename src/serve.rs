@@ -47,6 +47,11 @@ struct ArchiveHandle {
     _watcher: Option<notify::RecommendedWatcher>,
 }
 
+struct HuggingfaceArchiveHandle {
+    archive: Arc<Mutex<HashSet<String>>>,
+    _watcher: Option<notify::RecommendedWatcher>,
+}
+
 #[derive(Clone, Debug)]
 struct RepoMetadata {
     url: String,
@@ -56,7 +61,7 @@ struct RepoMetadata {
     last_fetch: String,
 }
 
-fn read_and_parse_archive(path: &Path) -> anyhow::Result<(HashSet<String>, Vec<RepoMetadata>)> {
+fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<(HashSet<String>, Vec<RepoMetadata>)> {
     let metadata: Vec<RepoMetadata> = std::fs::read_to_string(path)?
         .lines()
         .map(|line| line.trim())
@@ -82,8 +87,18 @@ fn read_and_parse_archive(path: &Path) -> anyhow::Result<(HashSet<String>, Vec<R
     Ok((urls, metadata))
 }
 
-fn load_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
-    let (urls, meta) = read_and_parse_archive(path)?;
+fn read_and_parse_huggingface_archive(path: &Path) -> anyhow::Result<HashSet<String>> {
+    let urls: HashSet<String> = std::fs::read_to_string(path)?
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    Ok(urls)
+}
+
+fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
+    let (urls, meta) = read_and_parse_git_archive(path)?;
     let archive = Arc::new(Mutex::new(urls));
     let metadata = Arc::new(Mutex::new(meta));
 
@@ -101,7 +116,7 @@ fn load_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
                 Ok(event) => match event {
                     Ok(event) => {
                         log::trace!("event: {:?}", event);
-                        let (urls, meta) = read_and_parse_archive(&path).unwrap();
+                        let (urls, meta) = read_and_parse_git_archive(&path).unwrap();
                         *archive_clone.lock().unwrap() = urls;
                         *metadata_clone.lock().unwrap() = meta;
                     }
@@ -122,6 +137,46 @@ fn load_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
     Ok(ArchiveHandle {
         archive,
         metadata,
+        _watcher: watcher,
+    })
+}
+
+fn load_huggingface_archive(path: &Path, watch: bool) -> anyhow::Result<HuggingfaceArchiveHandle> {
+    let urls = read_and_parse_huggingface_archive(path)?;
+    let archive = Arc::new(Mutex::new(urls));
+
+    let watcher = if watch {
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+        let mut watcher = notify::recommended_watcher(tx)?;
+        watcher.watch(path, notify::RecursiveMode::Recursive)?;
+
+        let archive_clone = archive.clone();
+        let path = path.to_path_buf();
+
+        std::thread::spawn(move || loop {
+            match rx.recv() {
+                Ok(event) => match event {
+                    Ok(event) => {
+                        log::trace!("event: {:?}", event);
+                        let urls = read_and_parse_huggingface_archive(&path).unwrap();
+                        *archive_clone.lock().unwrap() = urls;
+                    }
+                    Err(e) => log::error!("watch error: {:?}", e),
+                },
+                Err(e) => {
+                    log::error!("watch error: {:?}", e);
+                    break;
+                }
+            }
+        });
+
+        Some(watcher)
+    } else {
+        None
+    };
+
+    Ok(HuggingfaceArchiveHandle {
+        archive,
         _watcher: watcher,
     })
 }
@@ -224,40 +279,18 @@ fn handle_has_git_repo_req(
 
 fn handle_has_huggingface_repo_req(
     req: HasHuggingfaceRequest,
-    archive_handle: &ArchiveHandle,
+    archive_handle: &HuggingfaceArchiveHandle,
 ) -> anyhow::Result<Response<std::io::Cursor<Vec<u8>>>> {
     log::info!("handle_has_huggingface_repo_req: {req:?}");
 
-    let (exists, metadata) = {
+    let exists = {
         let archive = archive_handle.archive.lock().unwrap();
-        let metadata_list = archive_handle.metadata.lock().unwrap();
-
-        let exists = archive.contains(&req.repo);
-        let metadata = if exists {
-            metadata_list.iter().find(|m| m.url == req.repo).cloned()
-        } else {
-            None
-        };
-
-        (exists, metadata)
+        archive.contains(&req.repo)
     };
 
-    let response = if let Some(meta) = metadata {
-        json!({
-            "exists": exists,
-            "metadata": {
-                "url": meta.url,
-                "path": meta.path,
-                "commit_hash": meta.commit_hash,
-                "commit_date": meta.commit_date,
-                "last_fetch": meta.last_fetch
-            }
-        })
-    } else {
-        json!({
-            "exists": exists
-        })
-    };
+    let response = json!({
+        "exists": exists
+    });
 
     log::debug!("response: {response}");
 
@@ -265,9 +298,9 @@ fn handle_has_huggingface_repo_req(
 }
 
 pub fn run(args: ServeParams) -> anyhow::Result<()> {
-    let git_repo_archive = load_archive(&args.git_repo_archive, args.watch)?;
+    let git_repo_archive = load_git_archive(&args.git_repo_archive, args.watch)?;
     let huggingface_archive = if let Some(archive) = args.huggingface_archive {
-        Some(load_archive(&archive, args.watch)?)
+        Some(load_huggingface_archive(&archive, args.watch)?)
     } else {
         None
     };
