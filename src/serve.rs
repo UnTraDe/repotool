@@ -24,7 +24,7 @@ pub struct ServeParams {
 
     /// Newline-seperated archive file
     #[arg(long)]
-    huggingface_archive: PathBuf,
+    huggingface_archive: Option<PathBuf>,
 
     /// Watch the archive file for changes
     #[arg(long)]
@@ -43,21 +43,49 @@ struct HasHuggingfaceRequest {
 
 struct ArchiveHandle {
     archive: Arc<Mutex<HashSet<String>>>,
+    metadata: Arc<Mutex<Vec<RepoMetadata>>>,
     _watcher: Option<notify::RecommendedWatcher>,
 }
 
-fn read_and_parse_archive(path: &Path) -> anyhow::Result<HashSet<String>> {
-    Ok(HashSet::from_iter(
-        std::fs::read_to_string(path)?
-            .lines()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty())
-            .map(|line| line.to_string()),
-    ))
+#[derive(Clone, Debug)]
+struct RepoMetadata {
+    url: String,
+    path: String,
+    commit_hash: String,
+    commit_date: String,
+    last_fetch: String,
+}
+
+fn read_and_parse_archive(path: &Path) -> anyhow::Result<(HashSet<String>, Vec<RepoMetadata>)> {
+    let metadata: Vec<RepoMetadata> = std::fs::read_to_string(path)?
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 5 {
+                panic!("bad line: {line}")
+            }
+
+            RepoMetadata {
+                url: parts[0].to_string(),
+                path: parts[1].to_string(),
+                commit_hash: parts[2].to_string(),
+                commit_date: parts[3].to_string(),
+                last_fetch: parts[4].to_string(),
+            }
+        })
+        .collect();
+
+    let urls = HashSet::from_iter(metadata.iter().map(|m| m.url.clone()));
+
+    Ok((urls, metadata))
 }
 
 fn load_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
-    let archive = Arc::new(Mutex::new(read_and_parse_archive(path)?));
+    let (urls, meta) = read_and_parse_archive(path)?;
+    let archive = Arc::new(Mutex::new(urls));
+    let metadata = Arc::new(Mutex::new(meta));
 
     let watcher = if watch {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
@@ -65,6 +93,7 @@ fn load_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
         watcher.watch(path, notify::RecursiveMode::Recursive)?;
 
         let archive_clone = archive.clone();
+        let metadata_clone = metadata.clone();
         let path = path.to_path_buf();
 
         std::thread::spawn(move || loop {
@@ -72,8 +101,9 @@ fn load_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
                 Ok(event) => match event {
                     Ok(event) => {
                         log::trace!("event: {:?}", event);
-                        let mut archive = archive_clone.lock().unwrap();
-                        *archive = read_and_parse_archive(&path).unwrap();
+                        let (urls, meta) = read_and_parse_archive(&path).unwrap();
+                        *archive_clone.lock().unwrap() = urls;
+                        *metadata_clone.lock().unwrap() = meta;
                     }
                     Err(e) => log::error!("watch error: {:?}", e),
                 },
@@ -91,13 +121,14 @@ fn load_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
 
     Ok(ArchiveHandle {
         archive,
+        metadata,
         _watcher: watcher,
     })
 }
 
 fn handle_has_git_repo_req(
     req: HasGitRepoRequest,
-    archive: &Arc<Mutex<HashSet<String>>>,
+    archive_handle: &ArchiveHandle,
 ) -> anyhow::Result<Response<std::io::Cursor<Vec<u8>>>> {
     log::info!("handle_has_git_repo_req: {req:?}");
 
@@ -149,19 +180,42 @@ fn handle_has_git_repo_req(
         variants
     };
 
-    let existing = {
-        let archive = archive.lock().unwrap();
+    let (existing, metadata) = {
+        let archive = archive_handle.archive.lock().unwrap();
+        let metadata_list = archive_handle.metadata.lock().unwrap();
 
-        variants
-            .into_iter()
-            .filter(|url| archive.contains(url))
-            .collect::<Vec<_>>()
+        let existing: Vec<_> = variants
+            .iter()
+            .filter(|url| archive.contains(*url))
+            .cloned()
+            .collect();
+
+        // Find metadata for the first matching URL
+        let metadata = existing
+            .first()
+            .and_then(|url| metadata_list.iter().find(|m| &m.url == url).cloned());
+
+        (existing, metadata)
     };
 
-    let response = json!({
-        "exists": !existing.is_empty(),
-        "existing": existing
-    });
+    let response = if let Some(meta) = metadata {
+        json!({
+            "exists": !existing.is_empty(),
+            "existing": existing,
+            "metadata": {
+                "url": meta.url,
+                "path": meta.path,
+                "commit_hash": meta.commit_hash,
+                "commit_date": meta.commit_date,
+                "last_fetch": meta.last_fetch
+            }
+        })
+    } else {
+        json!({
+            "exists": !existing.is_empty(),
+            "existing": existing
+        })
+    };
 
     log::debug!("response: {response}");
 
@@ -170,13 +224,40 @@ fn handle_has_git_repo_req(
 
 fn handle_has_huggingface_repo_req(
     req: HasHuggingfaceRequest,
-    archive: &Arc<Mutex<HashSet<String>>>,
+    archive_handle: &ArchiveHandle,
 ) -> anyhow::Result<Response<std::io::Cursor<Vec<u8>>>> {
     log::info!("handle_has_huggingface_repo_req: {req:?}");
 
-    let response = json!({
-        "exists": archive.lock().unwrap().contains(&req.repo)
-    });
+    let (exists, metadata) = {
+        let archive = archive_handle.archive.lock().unwrap();
+        let metadata_list = archive_handle.metadata.lock().unwrap();
+
+        let exists = archive.contains(&req.repo);
+        let metadata = if exists {
+            metadata_list.iter().find(|m| m.url == req.repo).cloned()
+        } else {
+            None
+        };
+
+        (exists, metadata)
+    };
+
+    let response = if let Some(meta) = metadata {
+        json!({
+            "exists": exists,
+            "metadata": {
+                "url": meta.url,
+                "path": meta.path,
+                "commit_hash": meta.commit_hash,
+                "commit_date": meta.commit_date,
+                "last_fetch": meta.last_fetch
+            }
+        })
+    } else {
+        json!({
+            "exists": exists
+        })
+    };
 
     log::debug!("response: {response}");
 
@@ -185,7 +266,11 @@ fn handle_has_huggingface_repo_req(
 
 pub fn run(args: ServeParams) -> anyhow::Result<()> {
     let git_repo_archive = load_archive(&args.git_repo_archive, args.watch)?;
-    let huggingface_archive = load_archive(&args.huggingface_archive, args.watch)?;
+    let huggingface_archive = if let Some(archive) = args.huggingface_archive {
+        Some(load_archive(&archive, args.watch)?)
+    } else {
+        None
+    };
 
     let server = Server::http(format!("{}:{}", args.address, args.port))
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -198,7 +283,7 @@ pub fn run(args: ServeParams) -> anyhow::Result<()> {
         match request.url() {
             "/has_git_repo" => {
                 match serde_json::from_reader::<_, HasGitRepoRequest>(request.as_reader()) {
-                    Ok(req) => match handle_has_git_repo_req(req, &git_repo_archive.archive) {
+                    Ok(req) => match handle_has_git_repo_req(req, &git_repo_archive) {
                         Ok(r) => request.respond(r)?,
                         Err(e) => request.respond(Response::from_string(
                             json!({
@@ -223,15 +308,24 @@ pub fn run(args: ServeParams) -> anyhow::Result<()> {
             "/has_huggingface_repo" => {
                 match serde_json::from_reader::<_, HasHuggingfaceRequest>(request.as_reader()) {
                     Ok(req) => {
-                        match handle_has_huggingface_repo_req(req, &huggingface_archive.archive) {
-                            Ok(r) => request.respond(r)?,
-                            Err(e) => request.respond(Response::from_string(
+                        if let Some(huggingface_archive) = &huggingface_archive {
+                            match handle_has_huggingface_repo_req(req, huggingface_archive) {
+                                Ok(r) => request.respond(r)?,
+                                Err(e) => request.respond(Response::from_string(
+                                    json!({
+                                        "error": "error handling request",
+                                        "details": e.to_string()
+                                    })
+                                    .to_string(),
+                                ))?,
+                            }
+                        } else {
+                            request.respond(Response::from_string(
                                 json!({
-                                    "error": "error handling request",
-                                    "details": e.to_string()
+                                    "error": "instance started without huggingface archive provided"
                                 })
                                 .to_string(),
-                            ))?,
+                            ))?
                         }
                     }
                     Err(e) => {
@@ -271,8 +365,8 @@ mod tests {
     };
 
     #[fixture]
-    pub fn archive() -> Arc<Mutex<HashSet<String>>> {
-        Arc::new(Mutex::new(HashSet::from_iter(
+    pub fn archive() -> super::ArchiveHandle {
+        let urls = HashSet::from_iter(
             [
                 "https://github.com/rust-lang/rust.git",
                 "http://github.com/rust-lang/rust.git",
@@ -283,7 +377,21 @@ mod tests {
                 "git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git",
             ]
             .map(String::from),
-        )))
+        );
+
+        let metadata = vec![super::RepoMetadata {
+            url: "https://github.com/rust-lang/rust.git".to_string(),
+            path: "rust.git".to_string(),
+            commit_hash: "abc123".to_string(),
+            commit_date: "2025-01-01 12:00:00".to_string(),
+            last_fetch: "never".to_string(),
+        }];
+
+        super::ArchiveHandle {
+            archive: Arc::new(Mutex::new(urls)),
+            metadata: Arc::new(Mutex::new(metadata)),
+            _watcher: None,
+        }
     }
 
     #[rstest]
@@ -292,7 +400,7 @@ mod tests {
     #[case("https://github.com/rust-lang/miri.git", &[])]
     #[case("git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git", &["git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"])]
     fn handle_has_git_repo_req(
-        archive: Arc<Mutex<HashSet<String>>>,
+        archive: super::ArchiveHandle,
         #[case] url: String,
         #[case] expected: &[&str],
     ) -> anyhow::Result<()> {
