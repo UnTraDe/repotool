@@ -5,7 +5,7 @@ After=graphical.target
 [Service]
 User=tomer
 Environment=RUST_LOG=info
-ExecStart=/home/tomer/.cargo/bin/repotool serve --git-repo-archive /home/tomer/drive/repo-archive.txt --huggingface-archive /home/tomer/drive/huggingface-archive.txt
+ExecStart=/home/tomer/.cargo/bin/repotool serve --watch --git-repo-archive /home/tomer/drive/repo-archive.txt --huggingface-archive /home/tomer/drive/huggingface-archive.txt
 Restart=always
 
 [Install]
