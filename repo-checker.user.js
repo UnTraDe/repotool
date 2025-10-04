@@ -47,10 +47,9 @@ function createPanel(res) {
     border: 2px solid ${res.exists ? "#2ea043" : "#da3633"};
     border-radius: 8px;
     padding: 12px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     font-size: 14px;
     z-index: 10000;
-    min-width: 300px;
+    min-width: 250px;
     max-width: 500px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   `;
