@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## General Behaviour
+
+* Ask clarifying questions if something is not well defined or understood
+* Feel free to push back if you think an instruction is missing something or didn't consider all cases
+
 ## Project Overview
 
 `repotool` is a Rust CLI tool for managing and analyzing Git repositories. It provides functionality for scanning local filesystems for repositories, cloning repositories from platforms like GitHub, computing file hashes, and serving repository metadata via HTTP.
