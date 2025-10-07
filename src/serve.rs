@@ -2,7 +2,7 @@ use clap::Parser;
 use notify::Watcher;
 use serde_json::json;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
 };
@@ -42,8 +42,7 @@ struct HasHuggingfaceRequest {
 }
 
 struct ArchiveHandle {
-    archive: Arc<Mutex<HashSet<String>>>,
-    metadata: Arc<Mutex<Vec<RepoMetadata>>>,
+    archive: Arc<Mutex<HashMap<String, RepoMetadata>>>,
     _watcher: Option<notify::RecommendedWatcher>,
 }
 
@@ -61,8 +60,8 @@ struct RepoMetadata {
     last_fetch: String,
 }
 
-fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<(HashSet<String>, Vec<RepoMetadata>)> {
-    let metadata: Vec<RepoMetadata> = std::fs::read_to_string(path)?
+fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<HashMap<String, RepoMetadata>> {
+    let map: HashMap<String, RepoMetadata> = std::fs::read_to_string(path)?
         .lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty())
@@ -72,19 +71,19 @@ fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<(HashSet<String>, V
                 panic!("bad line: {line}")
             }
 
-            RepoMetadata {
+            let metadata = RepoMetadata {
                 url: parts[0].to_string(),
                 path: parts[1].to_string(),
                 commit_hash: parts[2].to_string(),
                 commit_date: parts[3].to_string(),
                 last_fetch: parts[4].to_string(),
-            }
+            };
+
+            (metadata.url.to_lowercase(), metadata)
         })
         .collect();
 
-    let urls = HashSet::from_iter(metadata.iter().map(|m| m.url.clone()));
-
-    Ok((urls, metadata))
+    Ok(map)
 }
 
 fn read_and_parse_huggingface_archive(path: &Path) -> anyhow::Result<HashSet<String>> {
@@ -98,9 +97,8 @@ fn read_and_parse_huggingface_archive(path: &Path) -> anyhow::Result<HashSet<Str
 }
 
 fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
-    let (urls, meta) = read_and_parse_git_archive(path)?;
-    let archive = Arc::new(Mutex::new(urls));
-    let metadata = Arc::new(Mutex::new(meta));
+    let map = read_and_parse_git_archive(path)?;
+    let archive = Arc::new(Mutex::new(map));
 
     let watcher = if watch {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
@@ -108,7 +106,6 @@ fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
         watcher.watch(path, notify::RecursiveMode::Recursive)?;
 
         let archive_clone = archive.clone();
-        let metadata_clone = metadata.clone();
         let path = path.to_path_buf();
 
         std::thread::spawn(move || loop {
@@ -116,9 +113,8 @@ fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
                 Ok(event) => match event {
                     Ok(event) => {
                         log::trace!("event: {:?}", event);
-                        let (urls, meta) = read_and_parse_git_archive(&path).unwrap();
-                        *archive_clone.lock().unwrap() = urls;
-                        *metadata_clone.lock().unwrap() = meta;
+                        let map = read_and_parse_git_archive(&path).unwrap();
+                        *archive_clone.lock().unwrap() = map;
                     }
                     Err(e) => log::error!("watch error: {:?}", e),
                 },
@@ -136,7 +132,6 @@ fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
 
     Ok(ArchiveHandle {
         archive,
-        metadata,
         _watcher: watcher,
     })
 }
@@ -191,7 +186,7 @@ fn handle_has_git_repo_req(
         let schemas = &["http://", "https://", "git://"];
         let suffixes = &[".git"];
 
-        let original = req.url.clone();
+        let original = req.url.to_lowercase();
         let suffix_stripped = suffixes
             .iter()
             .filter_map(|s| original.strip_suffix(s))
@@ -201,7 +196,9 @@ fn handle_has_git_repo_req(
             anyhow::bail!("logic error");
         }
 
-        let suffix_stripped = suffix_stripped.first().map_or(req.url, |v| v.to_string());
+        let suffix_stripped = suffix_stripped
+            .first()
+            .map_or(original.clone(), |v| v.to_string());
 
         let suffix_stripped_cloned = suffix_stripped.clone();
         let schema_stripped = schemas
@@ -237,18 +234,18 @@ fn handle_has_git_repo_req(
 
     let (existing, metadata) = {
         let archive = archive_handle.archive.lock().unwrap();
-        let metadata_list = archive_handle.metadata.lock().unwrap();
 
-        let existing: Vec<_> = variants
-            .iter()
-            .filter(|url| archive.contains(*url))
-            .cloned()
-            .collect();
+        let mut existing = Vec::new();
+        let mut metadata = None;
 
-        // Find metadata for the first matching URL
-        let metadata = existing
-            .first()
-            .and_then(|url| metadata_list.iter().find(|m| &m.url == url).cloned());
+        for variant in &variants {
+            if let Some(repo_meta) = archive.get(variant) {
+                existing.push(repo_meta.url.clone());
+                if metadata.is_none() {
+                    metadata = Some(repo_meta.clone());
+                }
+            }
+        }
 
         (existing, metadata)
     };
@@ -285,7 +282,9 @@ fn handle_has_huggingface_repo_req(
 
     let exists = {
         let archive = archive_handle.archive.lock().unwrap();
-        archive.contains(&req.repo)
+        archive
+            .iter()
+            .any(|repo| repo.to_lowercase() == req.repo.to_lowercase())
     };
 
     let response = json!({
@@ -399,30 +398,32 @@ mod tests {
 
     #[fixture]
     pub fn archive() -> super::ArchiveHandle {
-        let urls = HashSet::from_iter(
-            [
-                "https://github.com/rust-lang/rust.git",
-                "http://github.com/rust-lang/rust.git",
-                "git://github.com/rust-lang/rust",
-                "github.com/rust-lang/rust",
-                "https://github.com/rust-lang/rust-clippy.git",
-                "http://github.com/rust-lang/rust-clippy",
-                "git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git",
-            ]
-            .map(String::from),
-        );
+        let urls = [
+            "https://github.com/rust-lang/rust.git",
+            "http://github.com/rust-lang/rust.git",
+            "git://github.com/rust-lang/rust",
+            "github.com/rust-lang/rust",
+            "https://github.com/rust-lang/rust-clippy.git",
+            "http://github.com/rust-lang/rust-clippy",
+            "git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git",
+        ];
 
-        let metadata = vec![super::RepoMetadata {
-            url: "https://github.com/rust-lang/rust.git".to_string(),
-            path: "rust.git".to_string(),
-            commit_hash: "abc123".to_string(),
-            commit_date: "2025-01-01 12:00:00".to_string(),
-            last_fetch: "never".to_string(),
-        }];
+        let map: std::collections::HashMap<String, super::RepoMetadata> = urls
+            .iter()
+            .map(|url| {
+                let metadata = super::RepoMetadata {
+                    url: url.to_string(),
+                    path: format!("{}.git", url.split('/').next_back().unwrap_or("repo")),
+                    commit_hash: "abc123".to_string(),
+                    commit_date: "2025-01-01 12:00:00".to_string(),
+                    last_fetch: "never".to_string(),
+                };
+                (url.to_string(), metadata)
+            })
+            .collect();
 
         super::ArchiveHandle {
-            archive: Arc::new(Mutex::new(urls)),
-            metadata: Arc::new(Mutex::new(metadata)),
+            archive: Arc::new(Mutex::new(map)),
             _watcher: None,
         }
     }
@@ -432,6 +433,8 @@ mod tests {
     #[case("github.com/rust-lang/rust-clippy", &[ "https://github.com/rust-lang/rust-clippy.git", "http://github.com/rust-lang/rust-clippy"])]
     #[case("https://github.com/rust-lang/miri.git", &[])]
     #[case("git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git", &["git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"])]
+    #[case("HTTPS://GITHUB.COM/rust-lang/rust.git", &["https://github.com/rust-lang/rust.git", "http://github.com/rust-lang/rust.git", "git://github.com/rust-lang/rust", "github.com/rust-lang/rust"])]
+    #[case("GITHUB.COM/RUST-LANG/RUST-CLIPPY", &[ "https://github.com/rust-lang/rust-clippy.git", "http://github.com/rust-lang/rust-clippy"])]
     fn handle_has_git_repo_req(
         archive: super::ArchiveHandle,
         #[case] url: String,
@@ -465,5 +468,52 @@ mod tests {
         let set1: HashSet<_> = arr1.iter().collect();
         let set2: HashSet<_> = arr2.iter().collect();
         set1 == set2
+    }
+
+    #[rstest]
+    fn handle_has_huggingface_repo_req_case_insensitive() -> anyhow::Result<()> {
+        let urls = HashSet::from_iter(
+            ["meta-llama/Llama-2-7b-hf", "openai/whisper-large-v3"].map(String::from),
+        );
+
+        let archive = super::HuggingfaceArchiveHandle {
+            archive: Arc::new(Mutex::new(urls)),
+            _watcher: None,
+        };
+
+        // Test lowercase request matches mixed case archive
+        let response = super::handle_has_huggingface_repo_req(
+            super::HasHuggingfaceRequest {
+                repo: "meta-llama/llama-2-7b-hf".to_string(),
+            },
+            &archive,
+        )?;
+        let response_json: serde_json::Value =
+            serde_json::from_reader(response.into_reader()).unwrap();
+        assert_eq!(response_json["exists"].as_bool().unwrap(), true);
+
+        // Test uppercase request matches mixed case archive
+        let response = super::handle_has_huggingface_repo_req(
+            super::HasHuggingfaceRequest {
+                repo: "OPENAI/WHISPER-LARGE-V3".to_string(),
+            },
+            &archive,
+        )?;
+        let response_json: serde_json::Value =
+            serde_json::from_reader(response.into_reader()).unwrap();
+        assert_eq!(response_json["exists"].as_bool().unwrap(), true);
+
+        // Test non-existent repo
+        let response = super::handle_has_huggingface_repo_req(
+            super::HasHuggingfaceRequest {
+                repo: "NOT/EXISTS".to_string(),
+            },
+            &archive,
+        )?;
+        let response_json: serde_json::Value =
+            serde_json::from_reader(response.into_reader()).unwrap();
+        assert_eq!(response_json["exists"].as_bool().unwrap(), false);
+
+        Ok(())
     }
 }
