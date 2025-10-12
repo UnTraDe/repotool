@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Check Repo Archive
 // @namespace    http://tampermonkey.net/
-// @version      0.2
+// @version      0.3
 // @description  Checks if the current GitHub or Hugging Face repository is in the archive
 // @author       You
 // @match        https://github.com/*/*
@@ -29,7 +29,7 @@ function transformHuggingfaceUrl(url) {
   return `${org}/${repo}`;
 }
 
-function createPanel(res) {
+function createPanel(res, url, hostname) {
   // Remove existing panel if any
   const existingPanel = document.getElementById("repo-checker-panel");
   if (existingPanel) {
@@ -68,6 +68,46 @@ function createPanel(res) {
   const statusText = res.exists ? "Repository Archived" : "Not Archived";
   title.innerHTML = `<span style="font-size: 20px;">${statusIcon}</span> ${statusText}`;
   panel.appendChild(title);
+
+  // Add copy command button for non-archived GitHub repos
+  if (!res.exists && hostname === "github.com" && url) {
+    const copyBtn = document.createElement("button");
+    copyBtn.textContent = "Copy grab command";
+    copyBtn.style.cssText = `
+      margin-top: 8px;
+      padding: 8px 12px;
+      background: #238636;
+      border: 1px solid #2ea043;
+      border-radius: 6px;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.2s;
+    `;
+    copyBtn.onmouseover = () => (copyBtn.style.background = "#2ea043");
+    copyBtn.onmouseout = () => (copyBtn.style.background = "#238636");
+    copyBtn.onclick = () => {
+      const cloneUrl = `${url}.git`;
+      const command = `grab-github-single "${cloneUrl}";`;
+      navigator.clipboard
+        .writeText(command)
+        .then(() => {
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => {
+            copyBtn.textContent = "Copy grab command";
+          }, 2000);
+        })
+        .catch((err) => {
+          console.error("Failed to copy:", err);
+          copyBtn.textContent = "Failed to copy";
+          setTimeout(() => {
+            copyBtn.textContent = "Copy grab command";
+          }, 2000);
+        });
+    };
+    panel.appendChild(copyBtn);
+  }
 
   if (res.exists && res.metadata) {
     const metadata = res.metadata;
@@ -153,7 +193,7 @@ const cache = new Map();
       const cached = cache.get(transformedUrl);
 
       if (cached !== null) {
-        createPanel(cache.get(transformedUrl));
+        createPanel(cache.get(transformedUrl), transformedUrl, hostname);
       }
 
       return;
@@ -171,7 +211,7 @@ const cache = new Map();
       onload: (response) => {
         if (response.status === 200) {
           const result = JSON.parse(response.responseText);
-          createPanel(result);
+          createPanel(result, transformedUrl, hostname);
           cache.set(transformedUrl, result);
         } else {
           console.error("Error checking repository:", response.statusText);
@@ -179,11 +219,15 @@ const cache = new Map();
       },
       onerror: (error) => {
         // Show error panel
-        createPanel({
-          exists: false,
-          error: true,
-          message: "Connection error",
-        });
+        createPanel(
+          {
+            exists: false,
+            error: true,
+            message: "Connection error",
+          },
+          transformedUrl,
+          hostname,
+        );
         console.log("error: " + JSON.stringify(error));
       },
     });
@@ -202,18 +246,18 @@ const cache = new Map();
   };
 
   // Listen for history changes (back/forward buttons)
-  window.addEventListener('popstate', checkUrlChange);
+  window.addEventListener("popstate", checkUrlChange);
 
   // Intercept pushState and replaceState
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
 
-  history.pushState = function(...args) {
+  history.pushState = function (...args) {
     originalPushState.apply(this, args);
     checkUrlChange();
   };
 
-  history.replaceState = function(...args) {
+  history.replaceState = function (...args) {
     originalReplaceState.apply(this, args);
     checkUrlChange();
   };
