@@ -48,13 +48,8 @@ struct HasHuggingfaceRequest {
     repo: String,
 }
 
-struct ArchiveHandle {
-    archive: Arc<Mutex<HashMap<String, RepoMetadata>>>,
-    _debouncer: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
-}
-
-struct HuggingfaceArchiveHandle {
-    archive: Arc<Mutex<HashSet<String>>>,
+struct ArchiveHandle<T> {
+    archive: Arc<Mutex<T>>,
     _debouncer: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
 }
 
@@ -103,13 +98,22 @@ fn read_and_parse_huggingface_archive(path: &Path) -> anyhow::Result<HashSet<Str
     Ok(urls)
 }
 
-fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
-    let map = read_and_parse_git_archive(path)?;
-    let archive = Arc::new(Mutex::new(map));
+fn load_archive<T>(
+    path: &Path,
+    watch: bool,
+    parse_fn: fn(&Path) -> anyhow::Result<T>,
+    archive_name: &str,
+) -> anyhow::Result<ArchiveHandle<T>>
+where
+    T: 'static + Send,
+{
+    let data = parse_fn(path)?;
+    let archive = Arc::new(Mutex::new(data));
 
     let debouncer = if watch {
         let archive_clone = archive.clone();
         let path_clone = path.to_path_buf();
+        let archive_name = archive_name.to_string();
         let mut debouncer = new_debouncer(
             DEBOUNCE_TIMEOUT,
             None,
@@ -119,13 +123,15 @@ fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
 
                     for event in events {
                         if event.kind.is_modify() {
-                            log::debug!("git archive modified, reloading...");
-                            match read_and_parse_git_archive(&path_clone) {
-                                Ok(map) => {
-                                    *archive_clone.lock().unwrap() = map;
-                                    log::info!("git archive reloaded");
+                            log::debug!("{} archive modified, reloading...", archive_name);
+                            match parse_fn(&path_clone) {
+                                Ok(data) => {
+                                    *archive_clone.lock().unwrap() = data;
+                                    log::info!("{} archive reloaded", archive_name);
                                 }
-                                Err(e) => log::error!("failed to reload git archive: {e:?}"),
+                                Err(e) => {
+                                    log::error!("failed to reload {} archive: {e:?}", archive_name)
+                                }
                             }
                             break;
                         }
@@ -150,58 +156,9 @@ fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
     })
 }
 
-fn load_huggingface_archive(path: &Path, watch: bool) -> anyhow::Result<HuggingfaceArchiveHandle> {
-    let urls = read_and_parse_huggingface_archive(path)?;
-    let archive = Arc::new(Mutex::new(urls));
-
-    let debouncer = if watch {
-        let archive_clone = archive.clone();
-        let path_clone = path.to_path_buf();
-        let mut debouncer = new_debouncer(
-            DEBOUNCE_TIMEOUT,
-            None,
-            move |result: DebounceEventResult| match result {
-                Ok(events) => {
-                    log::trace!("events({}): {:?}", events.len(), events);
-
-                    for event in events {
-                        if event.kind.is_modify() {
-                            log::debug!("huggingface archive modified, reloading...");
-                            match read_and_parse_huggingface_archive(&path_clone) {
-                                Ok(map) => {
-                                    *archive_clone.lock().unwrap() = map;
-                                    log::info!("huggingface archive reloaded");
-                                }
-                                Err(e) => {
-                                    log::error!("failed to reload huggingface archive: {e:?}")
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-                e => {
-                    log::error!("watch error: {:?}", e);
-                }
-            },
-        )?;
-
-        debouncer.watch(path, notify::RecursiveMode::NonRecursive)?;
-
-        Some(debouncer)
-    } else {
-        None
-    };
-
-    Ok(HuggingfaceArchiveHandle {
-        archive,
-        _debouncer: debouncer,
-    })
-}
-
 fn handle_has_git_repo_req(
     req: HasGitRepoRequest,
-    archive_handle: &ArchiveHandle,
+    archive_handle: &ArchiveHandle<HashMap<String, RepoMetadata>>,
 ) -> anyhow::Result<Response<std::io::Cursor<Vec<u8>>>> {
     log::info!("handle_has_git_repo_req: {req:?}");
 
@@ -299,7 +256,7 @@ fn handle_has_git_repo_req(
 
 fn handle_has_huggingface_repo_req(
     req: HasHuggingfaceRequest,
-    archive_handle: &HuggingfaceArchiveHandle,
+    archive_handle: &ArchiveHandle<HashSet<String>>,
 ) -> anyhow::Result<Response<std::io::Cursor<Vec<u8>>>> {
     log::info!("handle_has_huggingface_repo_req: {req:?}");
 
@@ -320,9 +277,19 @@ fn handle_has_huggingface_repo_req(
 }
 
 pub fn run(args: ServeParams) -> anyhow::Result<()> {
-    let git_repo_archive = load_git_archive(&args.git_repo_archive, args.watch)?;
+    let git_repo_archive = load_archive(
+        &args.git_repo_archive,
+        args.watch,
+        read_and_parse_git_archive,
+        "git",
+    )?;
     let huggingface_archive = if let Some(archive) = args.huggingface_archive {
-        Some(load_huggingface_archive(&archive, args.watch)?)
+        Some(load_archive(
+            &archive,
+            args.watch,
+            read_and_parse_huggingface_archive,
+            "huggingface",
+        )?)
     } else {
         None
     };
@@ -420,7 +387,8 @@ mod tests {
     };
 
     #[fixture]
-    pub fn archive() -> super::ArchiveHandle {
+    pub fn archive() -> super::ArchiveHandle<std::collections::HashMap<String, super::RepoMetadata>>
+    {
         let urls = [
             "https://github.com/rust-lang/rust.git",
             "http://github.com/rust-lang/rust.git",
@@ -459,7 +427,7 @@ mod tests {
     #[case("HTTPS://GITHUB.COM/rust-lang/rust.git", &["https://github.com/rust-lang/rust.git", "http://github.com/rust-lang/rust.git", "git://github.com/rust-lang/rust", "github.com/rust-lang/rust"])]
     #[case("GITHUB.COM/RUST-LANG/RUST-CLIPPY", &[ "https://github.com/rust-lang/rust-clippy.git", "http://github.com/rust-lang/rust-clippy"])]
     fn handle_has_git_repo_req(
-        archive: super::ArchiveHandle,
+        archive: super::ArchiveHandle<std::collections::HashMap<String, super::RepoMetadata>>,
         #[case] url: String,
         #[case] expected: &[&str],
     ) -> anyhow::Result<()> {
@@ -499,7 +467,7 @@ mod tests {
             ["meta-llama/Llama-2-7b-hf", "openai/whisper-large-v3"].map(String::from),
         );
 
-        let archive = super::HuggingfaceArchiveHandle {
+        let archive = super::ArchiveHandle {
             archive: Arc::new(Mutex::new(urls)),
             _debouncer: None,
         };
