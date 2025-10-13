@@ -1,6 +1,6 @@
 [package]
 name = "repotool"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
 [dependencies]
@@ -12,7 +12,7 @@ log = "0.4"
 octocrab = "0.38"
 pretty_env_logger = "0.5"
 tokio = { version = "1.38", features = ["rt-multi-thread"] }
-notify = "8.2"
+notify-debouncer-full = "0.6.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 infer = "0.19"
