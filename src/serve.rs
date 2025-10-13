@@ -1,12 +1,19 @@
 use clap::Parser;
-use notify::Watcher;
+use notify_debouncer_full::{
+    new_debouncer,
+    notify::{self, RecommendedWatcher},
+    DebounceEventResult, Debouncer, RecommendedCache,
+};
 use serde_json::json;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 use tiny_http::{Response, Server};
+
+const DEBOUNCE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Parser, Debug)]
 pub struct ServeParams {
@@ -43,12 +50,12 @@ struct HasHuggingfaceRequest {
 
 struct ArchiveHandle {
     archive: Arc<Mutex<HashMap<String, RepoMetadata>>>,
-    _watcher: Option<notify::RecommendedWatcher>,
+    _debouncer: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
 }
 
 struct HuggingfaceArchiveHandle {
     archive: Arc<Mutex<HashSet<String>>>,
-    _watcher: Option<notify::RecommendedWatcher>,
+    _debouncer: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
 }
 
 #[derive(Clone, Debug)]
@@ -61,14 +68,14 @@ struct RepoMetadata {
 }
 
 fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<HashMap<String, RepoMetadata>> {
-    let map: HashMap<String, RepoMetadata> = std::fs::read_to_string(path)?
+    let map = std::fs::read_to_string(path)?
         .lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty())
         .map(|line| {
             let parts: Vec<&str> = line.split(',').collect();
             if parts.len() != 5 {
-                panic!("bad line: {line}")
+                anyhow::bail!("bad line: '{line}'")
             }
 
             let metadata = RepoMetadata {
@@ -79,9 +86,9 @@ fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<HashMap<String, Rep
                 last_fetch: parts[4].to_string(),
             };
 
-            (metadata.url.to_lowercase(), metadata)
+            Ok((metadata.url.to_lowercase(), metadata))
         })
-        .collect();
+        .collect::<anyhow::Result<HashMap<String, RepoMetadata>>>()?;
 
     Ok(map)
 }
@@ -100,39 +107,46 @@ fn load_git_archive(path: &Path, watch: bool) -> anyhow::Result<ArchiveHandle> {
     let map = read_and_parse_git_archive(path)?;
     let archive = Arc::new(Mutex::new(map));
 
-    let watcher = if watch {
-        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = notify::recommended_watcher(tx)?;
-        watcher.watch(path, notify::RecursiveMode::Recursive)?;
-
+    let debouncer = if watch {
         let archive_clone = archive.clone();
-        let path = path.to_path_buf();
+        let path_clone = path.to_path_buf();
+        let mut debouncer = new_debouncer(
+            DEBOUNCE_TIMEOUT,
+            None,
+            move |result: DebounceEventResult| match result {
+                Ok(events) => {
+                    log::trace!("events({}): {:?}", events.len(), events);
 
-        std::thread::spawn(move || loop {
-            match rx.recv() {
-                Ok(event) => match event {
-                    Ok(event) => {
-                        log::trace!("event: {:?}", event);
-                        let map = read_and_parse_git_archive(&path).unwrap();
-                        *archive_clone.lock().unwrap() = map;
+                    for event in events {
+                        if event.kind.is_modify() {
+                            log::debug!("git archive modified, reloading...");
+                            match read_and_parse_git_archive(&path_clone) {
+                                Ok(map) => {
+                                    *archive_clone.lock().unwrap() = map;
+                                    log::info!("git archive reloaded");
+                                }
+                                Err(e) => log::error!("failed to reload git archive: {e:?}"),
+                            }
+                            break;
+                        }
                     }
-                    Err(e) => log::error!("watch error: {:?}", e),
-                },
-                Err(e) => {
-                    log::error!("watch error: {:?}", e);
-                    break;
                 }
-            }
-        });
+                e => {
+                    log::error!("watch error: {:?}", e);
+                }
+            },
+        )?;
 
-        Some(watcher)
+        debouncer.watch(path, notify::RecursiveMode::NonRecursive)?;
+
+        Some(debouncer)
     } else {
         None
     };
 
     Ok(ArchiveHandle {
         archive,
-        _watcher: watcher,
+        _debouncer: debouncer,
     })
 }
 
@@ -140,39 +154,48 @@ fn load_huggingface_archive(path: &Path, watch: bool) -> anyhow::Result<Huggingf
     let urls = read_and_parse_huggingface_archive(path)?;
     let archive = Arc::new(Mutex::new(urls));
 
-    let watcher = if watch {
-        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = notify::recommended_watcher(tx)?;
-        watcher.watch(path, notify::RecursiveMode::Recursive)?;
-
+    let debouncer = if watch {
         let archive_clone = archive.clone();
-        let path = path.to_path_buf();
+        let path_clone = path.to_path_buf();
+        let mut debouncer = new_debouncer(
+            DEBOUNCE_TIMEOUT,
+            None,
+            move |result: DebounceEventResult| match result {
+                Ok(events) => {
+                    log::trace!("events({}): {:?}", events.len(), events);
 
-        std::thread::spawn(move || loop {
-            match rx.recv() {
-                Ok(event) => match event {
-                    Ok(event) => {
-                        log::trace!("event: {:?}", event);
-                        let urls = read_and_parse_huggingface_archive(&path).unwrap();
-                        *archive_clone.lock().unwrap() = urls;
+                    for event in events {
+                        if event.kind.is_modify() {
+                            log::debug!("huggingface archive modified, reloading...");
+                            match read_and_parse_huggingface_archive(&path_clone) {
+                                Ok(map) => {
+                                    *archive_clone.lock().unwrap() = map;
+                                    log::info!("huggingface archive reloaded");
+                                }
+                                Err(e) => {
+                                    log::error!("failed to reload huggingface archive: {e:?}")
+                                }
+                            }
+                            break;
+                        }
                     }
-                    Err(e) => log::error!("watch error: {:?}", e),
-                },
-                Err(e) => {
-                    log::error!("watch error: {:?}", e);
-                    break;
                 }
-            }
-        });
+                e => {
+                    log::error!("watch error: {:?}", e);
+                }
+            },
+        )?;
 
-        Some(watcher)
+        debouncer.watch(path, notify::RecursiveMode::NonRecursive)?;
+
+        Some(debouncer)
     } else {
         None
     };
 
     Ok(HuggingfaceArchiveHandle {
         archive,
-        _watcher: watcher,
+        _debouncer: debouncer,
     })
 }
 
@@ -424,7 +447,7 @@ mod tests {
 
         super::ArchiveHandle {
             archive: Arc::new(Mutex::new(map)),
-            _watcher: None,
+            _debouncer: None,
         }
     }
 
@@ -478,7 +501,7 @@ mod tests {
 
         let archive = super::HuggingfaceArchiveHandle {
             archive: Arc::new(Mutex::new(urls)),
-            _watcher: None,
+            _debouncer: None,
         };
 
         // Test lowercase request matches mixed case archive
