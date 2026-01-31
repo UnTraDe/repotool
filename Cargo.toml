@@ -1,12 +1,12 @@
 [package]
 name = "repotool"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 git2 = "0.20"
 log = "0.4"
 octocrab = "0.38"

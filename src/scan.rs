@@ -32,12 +32,27 @@ pub struct ScanParams {
 }
 
 #[derive(Clone)]
-struct Entry {
-    path: PathBuf,
-    remote_url: String,
-    last_commit_hash: String,
-    last_commit_date: String,
-    last_repo_fetch: String,
+pub struct Entry {
+    pub path: PathBuf,
+    pub remote_url: String,
+    pub last_commit_hash: String,
+    pub last_commit_date: String,
+    pub last_repo_fetch: String,
+}
+
+impl Entry {
+    /// Convert entry to CSV line format, with path relative to base_dir
+    pub fn to_csv_line(&self, base_dir: &Path) -> String {
+        let relative_path = self.path.strip_prefix(base_dir).unwrap_or(&self.path);
+        format!(
+            "{},{},{},{},{}",
+            self.remote_url,
+            relative_path.display(),
+            self.last_commit_hash,
+            self.last_commit_date,
+            self.last_repo_fetch
+        )
+    }
 }
 
 pub fn scan(params: ScanParams) -> anyhow::Result<()> {
@@ -109,6 +124,12 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Scan a directory for git repositories up to the specified depth
+pub fn scan_directory(path: &Path, depth: usize) -> anyhow::Result<Vec<Entry>> {
+    let (repositories, _) = local(path, 0, depth.saturating_sub(1))?;
+    Ok(repositories)
 }
 
 fn create_entry_from_repo(repo: Repository, path: PathBuf) -> anyhow::Result<Option<Entry>> {

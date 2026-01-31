@@ -39,9 +39,9 @@ pub struct CloneParams {
     prepand_command: String,
 }
 
-struct Entry {
-    clone_url: String,
-    is_fork: bool,
+pub struct Entry {
+    pub clone_url: String,
+    pub is_fork: bool,
 }
 
 pub fn clone(params: CloneParams) -> anyhow::Result<()> {
@@ -106,61 +106,88 @@ pub fn clone(params: CloneParams) -> anyhow::Result<()> {
 }
 
 async fn github(group_type: crate::RepositoryGroupType, name: &str) -> anyhow::Result<Vec<Entry>> {
+    match group_type {
+        crate::RepositoryGroupType::Org => fetch_github_org_repos(name).await,
+        crate::RepositoryGroupType::User => todo!(),
+    }
+}
+
+/// Fetch all repositories from a GitHub organization
+pub async fn fetch_github_org_repos(name: &str) -> anyhow::Result<Vec<Entry>> {
     let octocrab = octocrab::instance();
 
-    Ok(match group_type {
-        crate::RepositoryGroupType::Org => {
-            log::info!("fetching page 1...");
-            let page = octocrab
+    log::info!("fetching page 1...");
+    let page = octocrab
+        .orgs(name)
+        .list_repos()
+        .per_page(100)
+        .send()
+        .await?;
+
+    let pages = page.number_of_pages().unwrap_or(1);
+    log::info!("total pages: {pages}");
+    let mut current_page = 1;
+
+    let mut repos = page.items;
+
+    while current_page < pages {
+        current_page += 1;
+        log::info!("fetching page {}...", current_page);
+        repos.append(
+            &mut octocrab
                 .orgs(name)
                 .list_repos()
                 .per_page(100)
+                .page(current_page)
                 .send()
-                .await?;
-
-            let pages = page.number_of_pages().unwrap_or(1);
-            log::info!("total pages: {pages}");
-            let mut current_page = 1;
-
-            let mut repos = page.items;
-
-            while current_page < pages {
-                current_page += 1;
-                log::info!("fetching page {}...", current_page);
-                repos.append(
-                    &mut octocrab
-                        .orgs(name)
-                        .list_repos()
-                        .per_page(100)
-                        .page(current_page)
-                        .send()
-                        .await?
-                        .items,
-                );
-            }
-
-            repos
-        }
-        crate::RepositoryGroupType::User => todo!(), // octocrab.users(name).repos().send().await?,
+                .await?
+                .items,
+        );
     }
-    .into_iter()
-    .filter_map(|r| match (r.clone_url, r.fork) {
-        (Some(url), Some(fork)) => Some(Entry {
-            clone_url: url.as_str().to_owned(),
-            is_fork: fork,
-        }),
-        (u, f) => {
-            log::error!(
-                "'{}': expected fields to be present, but instead clone_url = {u:?}, fork = {f:?}",
-                r.name
-            );
-            None
-        }
-    })
-    .collect())
+
+    Ok(repos
+        .into_iter()
+        .filter_map(|r| match (r.clone_url, r.fork) {
+            (Some(url), Some(fork)) => Some(Entry {
+                clone_url: url.as_str().to_owned(),
+                is_fork: fork,
+            }),
+            (u, f) => {
+                log::error!(
+                    "'{}': expected fields to be present, but instead clone_url = {u:?}, fork = {f:?}",
+                    r.name
+                );
+                None
+            }
+        })
+        .collect())
 }
 
-fn is_in_compare_list(url: &str, compare: &HashSet<String>) -> bool {
+/// Filter entries by fork status
+pub fn filter_by_forks(entries: Vec<Entry>, filter_forks: bool, only_forks: bool) -> Vec<Entry> {
+    entries
+        .into_iter()
+        .filter(|e| {
+            if filter_forks {
+                !e.is_fork
+            } else if only_forks {
+                e.is_fork
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Filter entries that are not in the compare list
+pub fn filter_by_compare_list(entries: Vec<Entry>, compare: &HashSet<String>) -> Vec<Entry> {
+    entries
+        .into_iter()
+        .filter(|e| !is_in_compare_list(&e.clone_url, compare))
+        .collect()
+}
+
+pub fn is_in_compare_list(url: &str, compare: &HashSet<String>) -> bool {
     if compare.contains(url) {
         return true;
     }
