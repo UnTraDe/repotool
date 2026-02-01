@@ -64,6 +64,14 @@ pub fn clone(params: CloneParams) -> anyhow::Result<()> {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(github(group_type, &input))?
         }
+        crate::Platform::Gitlab {
+            group_type,
+            instance,
+            input,
+        } => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(gitlab(group_type, &instance, &input))?
+        }
     }
     .into_iter()
     .filter(|e| {
@@ -187,7 +195,63 @@ pub fn filter_by_compare_list(entries: Vec<Entry>, compare: &HashSet<String>) ->
         .collect()
 }
 
-pub fn is_in_compare_list(url: &str, compare: &HashSet<String>) -> bool {
+async fn gitlab(
+    group_type: crate::RepositoryGroupType,
+    instance: &str,
+    name: &str,
+) -> anyhow::Result<Vec<Entry>> {
+    use gitlab::api::{groups::projects::GroupProjects, ApiError, AsyncQuery};
+    use serde::Deserialize;
+
+    #[derive(Deserialize, Debug)]
+    struct GitLabProject {
+        http_url_to_repo: Option<String>,
+        forked_from_project: Option<serde_json::Value>,
+    }
+
+    let client = gitlab::GitlabBuilder::new(instance, "")
+        .build_async()
+        .await?;
+
+    Ok(match group_type {
+        crate::RepositoryGroupType::Org => {
+            log::info!("fetching projects from GitLab group '{}'...", name);
+
+            let endpoint = GroupProjects::builder()
+                .group(name)
+                .build()
+                .map_err(|e| anyhow::anyhow!("failed to build GitLab query: {}", e))?;
+
+            // Query all results using the pager
+            let repos: Vec<GitLabProject> =
+                gitlab::api::paged(endpoint, gitlab::api::Pagination::All)
+                    .query_async(&client)
+                    .await
+                    .map_err(|e: gitlab::api::ApiError<_>| match e {
+                        ApiError::GitlabService { status, .. } if status.as_u16() == 404 => {
+                            anyhow::anyhow!("Group '{}' not found", name)
+                        }
+                        e => anyhow::anyhow!("GitLab API error: {}", e),
+                    })?;
+
+            log::info!("fetched {} projects total", repos.len());
+            repos
+        }
+        crate::RepositoryGroupType::User => {
+            anyhow::bail!("User repositories are not yet supported for GitLab")
+        }
+    }
+    .into_iter()
+    .filter_map(|r| {
+        let clone_url = r.http_url_to_repo?;
+        let is_fork = r.forked_from_project.is_some();
+
+        Some(Entry { clone_url, is_fork })
+    })
+    .collect())
+}
+
+fn is_in_compare_list(url: &str, compare: &HashSet<String>) -> bool {
     if compare.contains(url) {
         return true;
     }

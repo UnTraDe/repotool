@@ -40,6 +40,17 @@ enum Platform {
 
         input: String,
     },
+    Gitlab {
+        #[arg(value_enum)]
+        group_type: RepositoryGroupType,
+
+        /// GitLab instance URL (e.g., https://gitlab.com or https://gitlab.archlinux.org)
+        #[arg(short, long)]
+        instance: String,
+
+        /// Group or user name
+        input: String,
+    },
 }
 
 #[derive(ValueEnum, Debug, Clone)]
