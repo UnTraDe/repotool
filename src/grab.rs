@@ -132,7 +132,7 @@ fn grab_github_org(
     let mut failure_count = 0;
 
     for entry in &repos {
-        let repo_name = extract_repo_name_from_url(&entry.clone_url)
+        let repo_name = extract_repo_name_from_url(&entry.clone_url, true)
             .unwrap_or_else(|| entry.clone_url.clone());
         let target_dir = org_dir.join(&repo_name);
 
@@ -178,7 +178,7 @@ fn grab_github_single(
 ) -> anyhow::Result<()> {
     // Determine output directory
     let dir_name = output_dir
-        .or_else(|| extract_repo_name_from_url(url))
+        .or_else(|| extract_repo_name_from_url(url, true))
         .ok_or_else(|| anyhow::anyhow!("could not determine output directory from URL: {}", url))?;
 
     let target_dir = base_dir.join(&dir_name);
@@ -233,10 +233,7 @@ fn append_to_archive(
     };
 
     // Open archive for appending (create if doesn't exist)
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(archive)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(archive)?;
 
     let mut added_count = 0;
     for entry in entries {
@@ -258,15 +255,16 @@ fn append_to_archive(
 /// - https://github.com/owner/repo.git
 /// - https://github.com/owner/repo
 /// - git@github.com:owner/repo.git
-pub fn extract_repo_name_from_url(url: &str) -> Option<String> {
+pub fn extract_repo_name_from_url(url: &str, preserve_dot_git: bool) -> Option<String> {
     // Handle SSH format: git@github.com:owner/repo.git
     if let Some(rest) = url.strip_prefix("git@") {
         if let Some(path) = rest.split(':').nth(1) {
-            let name = path
-                .trim_end_matches(".git")
-                .rsplit('/')
-                .next()?
-                .to_string();
+            let mut name = path.rsplit('/').next()?.to_string();
+
+            if !preserve_dot_git {
+                name = name.trim_end_matches(".git").to_string()
+            }
+
             if !name.is_empty() {
                 return Some(name);
             }
@@ -278,12 +276,11 @@ pub fn extract_repo_name_from_url(url: &str) -> Option<String> {
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
 
-    let name = path
-        .trim_end_matches(".git")
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()?
-        .to_string();
+    let mut name = path.trim_end_matches('/').rsplit('/').next()?.to_string();
+
+    if !preserve_dot_git {
+        name = name.trim_end_matches(".git").to_string()
+    }
 
     if name.is_empty() {
         None
@@ -299,7 +296,7 @@ mod tests {
     #[test]
     fn test_extract_repo_name_https_with_git() {
         assert_eq!(
-            extract_repo_name_from_url("https://github.com/owner/repo.git"),
+            extract_repo_name_from_url("https://github.com/owner/repo.git", false),
             Some("repo".to_string())
         );
     }
@@ -307,7 +304,7 @@ mod tests {
     #[test]
     fn test_extract_repo_name_https_without_git() {
         assert_eq!(
-            extract_repo_name_from_url("https://github.com/owner/repo"),
+            extract_repo_name_from_url("https://github.com/owner/repo", false),
             Some("repo".to_string())
         );
     }
@@ -315,7 +312,7 @@ mod tests {
     #[test]
     fn test_extract_repo_name_https_trailing_slash() {
         assert_eq!(
-            extract_repo_name_from_url("https://github.com/owner/repo/"),
+            extract_repo_name_from_url("https://github.com/owner/repo/", false),
             Some("repo".to_string())
         );
     }
@@ -323,7 +320,7 @@ mod tests {
     #[test]
     fn test_extract_repo_name_ssh_with_git() {
         assert_eq!(
-            extract_repo_name_from_url("git@github.com:owner/repo.git"),
+            extract_repo_name_from_url("git@github.com:owner/repo.git", false),
             Some("repo".to_string())
         );
     }
@@ -331,7 +328,7 @@ mod tests {
     #[test]
     fn test_extract_repo_name_ssh_without_git() {
         assert_eq!(
-            extract_repo_name_from_url("git@github.com:owner/repo"),
+            extract_repo_name_from_url("git@github.com:owner/repo", false),
             Some("repo".to_string())
         );
     }
@@ -339,13 +336,29 @@ mod tests {
     #[test]
     fn test_extract_repo_name_http() {
         assert_eq!(
-            extract_repo_name_from_url("http://github.com/owner/repo.git"),
+            extract_repo_name_from_url("http://github.com/owner/repo.git", false),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_https_with_git_preserve() {
+        assert_eq!(
+            extract_repo_name_from_url("https://github.com/owner/repo.git", true),
+            Some("repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_https_without_git_preserve() {
+        assert_eq!(
+            extract_repo_name_from_url("https://github.com/owner/repo", true),
             Some("repo".to_string())
         );
     }
 
     #[test]
     fn test_extract_repo_name_invalid() {
-        assert_eq!(extract_repo_name_from_url("not-a-url"), None);
+        assert_eq!(extract_repo_name_from_url("not-a-url", false), None);
     }
 }
