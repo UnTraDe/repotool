@@ -481,7 +481,7 @@ mod tests {
         )?;
         let response_json: serde_json::Value =
             serde_json::from_reader(response.into_reader()).unwrap();
-        assert_eq!(response_json["exists"].as_bool().unwrap(), true);
+        assert!(response_json["exists"].as_bool().unwrap());
 
         // Test uppercase request matches mixed case archive
         let response = super::handle_has_huggingface_repo_req(
@@ -492,7 +492,7 @@ mod tests {
         )?;
         let response_json: serde_json::Value =
             serde_json::from_reader(response.into_reader()).unwrap();
-        assert_eq!(response_json["exists"].as_bool().unwrap(), true);
+        assert!(response_json["exists"].as_bool().unwrap());
 
         // Test non-existent repo
         let response = super::handle_has_huggingface_repo_req(
@@ -503,7 +503,7 @@ mod tests {
         )?;
         let response_json: serde_json::Value =
             serde_json::from_reader(response.into_reader()).unwrap();
-        assert_eq!(response_json["exists"].as_bool().unwrap(), false);
+        assert!(!response_json["exists"].as_bool().unwrap());
 
         Ok(())
     }
