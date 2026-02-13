@@ -53,6 +53,30 @@ impl Entry {
             self.last_repo_fetch
         )
     }
+
+    /// Parse entry from CSV line format (inverse of to_csv_line)
+    /// Returns None for empty or malformed lines
+    pub fn from_csv_line(line: &str, base_dir: &Path) -> Option<Self> {
+        let line = line.trim();
+        if line.is_empty() {
+            return None;
+        }
+
+        let mut parts = line.splitn(5, ',');
+        let remote_url = parts.next()?.to_string();
+        let relative_path = parts.next()?;
+        let last_commit_hash = parts.next()?.to_string();
+        let last_commit_date = parts.next()?.to_string();
+        let last_repo_fetch = parts.next()?.to_string();
+
+        Some(Entry {
+            path: base_dir.join(relative_path),
+            remote_url,
+            last_commit_hash,
+            last_commit_date,
+            last_repo_fetch,
+        })
+    }
 }
 
 pub fn scan(params: ScanParams) -> anyhow::Result<()> {

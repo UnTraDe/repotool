@@ -251,7 +251,7 @@ async fn gitlab(
     .collect())
 }
 
-fn is_in_compare_list(url: &str, compare: &HashSet<String>) -> bool {
+pub fn is_in_compare_list(url: &str, compare: &HashSet<String>) -> bool {
     if compare.contains(url) {
         return true;
     }

@@ -2,10 +2,26 @@ use clap::{Args, Subcommand};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::{clone, scan};
+
+/// Load URLs from an archive file (CSV format with remote_url as first field)
+fn load_urls_from_archive(path: &Path) -> io::Result<HashSet<String>> {
+    let file = fs::File::open(path)?;
+    let reader = io::BufReader::new(file);
+    let dummy_base = Path::new("");
+
+    Ok(reader
+        .lines()
+        .filter_map(|line| {
+            line.ok()
+                .and_then(|l| scan::Entry::from_csv_line(&l, dummy_base))
+                .map(|e| e.remote_url)
+        })
+        .collect())
+}
 
 #[derive(Args, Debug)]
 pub struct GrabParams {
@@ -97,13 +113,9 @@ fn grab_github_org(
     fs::create_dir_all(&org_dir)?;
     log::info!("created org directory: {}", org_dir.display());
 
-    // Load compare file into HashSet
+    // Load compare file into HashSet (parse as CSV archive format)
     let compare = if let Some(compare_path) = compare_file {
-        HashSet::from_iter(
-            io::BufReader::new(fs::File::open(compare_path)?)
-                .lines()
-                .collect::<io::Result<Vec<String>>>()?,
-        )
+        load_urls_from_archive(&compare_path)?
     } else {
         HashSet::new()
     };
@@ -221,13 +233,7 @@ fn append_to_archive(
 ) -> anyhow::Result<()> {
     // Load existing archive entries for deduplication
     let existing: HashSet<String> = if archive.exists() {
-        io::BufReader::new(fs::File::open(archive)?)
-            .lines()
-            .filter_map(|line| {
-                line.ok()
-                    .and_then(|l| l.split(',').next().map(|s| s.to_string()))
-            })
-            .collect()
+        load_urls_from_archive(archive)?
     } else {
         HashSet::new()
     };
@@ -237,7 +243,7 @@ fn append_to_archive(
 
     let mut added_count = 0;
     for entry in entries {
-        if !existing.contains(&entry.remote_url) {
+        if !clone::is_in_compare_list(&entry.remote_url, &existing) {
             writeln!(file, "{}", entry.to_csv_line(base_dir))?;
             added_count += 1;
         } else {
