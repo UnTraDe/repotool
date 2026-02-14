@@ -41,7 +41,7 @@ pub fn run(params: FsckParams) -> anyhow::Result<()> {
         }
 
         let output = Command::new("git")
-            .args(["-C", &entry.path.to_string_lossy(), "fsck", "--full", "--no-dangling"])
+            .args(["-C", &entry.path.to_string_lossy(), "fsck", "--full", "--no-dangling", "--progress"])
             .output()?;
 
         let combined = format!(
