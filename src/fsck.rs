@@ -1,6 +1,6 @@
 use clap::Args;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
@@ -29,15 +29,32 @@ pub fn run(params: FsckParams) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut failures: Vec<(PathBuf, String)> = Vec::new();
+    let mut failure_file = params
+        .output_file
+        .as_ref()
+        .map(|output_path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(output_path)
+                .map(io::BufWriter::new)
+        })
+        .transpose()?;
+
+    let mut failure_count = 0usize;
 
     for entry in &entries {
         let repo = git2::Repository::open(&entry.path)?;
         if !repo.is_bare() {
-            anyhow::bail!(
-                "repository at '{}' is not a bare repository, aborting",
+            log::warn!(
+                "repository at '{}' is not a bare repository, skipping",
                 entry.path.display()
             );
+            let message = "not a bare repository".to_string();
+            write_failure(&mut failure_file, &entry.path, &message)?;
+            failure_count += 1;
+            continue;
         }
 
         let output = Command::new("git")
@@ -55,35 +72,36 @@ pub fn run(params: FsckParams) -> anyhow::Result<()> {
         println!();
 
         if !output.status.success() {
-            failures.push((entry.path.clone(), combined));
+            write_failure(&mut failure_file, &entry.path, &combined)?;
+            failure_count += 1;
         }
     }
 
     log::info!(
         "checked {} repositories, {} failures",
         entries.len(),
-        failures.len()
+        failure_count
     );
 
-    if let Some(output_path) = &params.output_file {
-        if !failures.is_empty() {
-            let mut file = io::BufWriter::new(
-                fs::OpenOptions::new()
-                    .create(true)
-                    .truncate(true)
-                    .write(true)
-                    .open(output_path)?,
-            );
-
-            for (path, output) in &failures {
-                writeln!(file, "=== {} ===", path.display())?;
-                write!(file, "{output}")?;
-                writeln!(file)?;
-            }
-
+    if failure_count > 0 {
+        if let Some(output_path) = &params.output_file {
             log::info!("wrote failure details to {}", output_path.display());
         }
     }
 
+    Ok(())
+}
+
+fn write_failure(
+    file: &mut Option<io::BufWriter<fs::File>>,
+    path: &Path,
+    output: &str,
+) -> anyhow::Result<()> {
+    if let Some(file) = file.as_mut() {
+        writeln!(file, "=== {} ===", path.display())?;
+        write!(file, "{output}")?;
+        writeln!(file)?;
+        file.flush()?;
+    }
     Ok(())
 }
