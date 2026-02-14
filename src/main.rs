@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod clone;
+mod fsck;
 mod grab;
 mod hash;
 mod scan;
@@ -27,6 +28,9 @@ enum Commands {
 
     /// Grab repositories (clone and add to archive)
     Grab(grab::GrabParams),
+
+    /// Run git fsck on bare repositories
+    Fsck(fsck::FsckParams),
 
     Hash(hash::HashParams),
     Serve(serve::ServeParams),
@@ -67,6 +71,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Scan(params) => scan::scan(params),
         Commands::Clone(params) => clone::clone(params),
+        Commands::Fsck(params) => fsck::run(params),
         Commands::Grab(params) => grab::run(params),
         Commands::Hash(hash) => hash::run(hash),
         Commands::Serve(serve) => serve::run(serve),

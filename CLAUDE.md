@@ -45,7 +45,7 @@ RUST_LOG=debug cargo run -- <subcommand>
 
 ## Architecture
 
-The project is organized into five main command modules, each implementing a distinct subcommand:
+The project is organized into six main command modules, each implementing a distinct subcommand:
 
 ### 1. Scan Module (`src/scan.rs`)
 Recursively scans local directories to find Git repositories and extract their remote URLs.
@@ -80,7 +80,15 @@ HTTP server that checks if repositories exist in archive files.
 - `/has_git_repo` handles URL normalization (different schemes/suffixes) to match repositories regardless of URL format
 - Uses `tiny_http` for the HTTP server
 
-### 5. Grab Module (`src/grab.rs`)
+### 5. Fsck Module (`src/fsck.rs`)
+Runs `git fsck --full --no-dangling` on bare repositories discovered via the scan module.
+- Reuses `scan::scan_directory()` to discover repositories with configurable depth
+- Verifies each repository is bare before running fsck (aborts if a non-bare repo is found)
+- Prints fsck output for every repository to stdout
+- Collects failures (non-zero exit code) and optionally writes them to a plain-text output file
+- Prints a summary of total repos checked and number of failures
+
+### 6. Grab Module (`src/grab.rs`)
 Higher-level command that combines cloning a repository and adding it to an archive atomically.
 - Clones a repository (mirror) and registers it in the archive file in one operation
 - Parses and normalizes repository URLs from various formats
