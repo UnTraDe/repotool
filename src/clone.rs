@@ -116,7 +116,7 @@ pub fn clone(params: CloneParams) -> anyhow::Result<()> {
 async fn github(group_type: crate::RepositoryGroupType, name: &str) -> anyhow::Result<Vec<Entry>> {
     match group_type {
         crate::RepositoryGroupType::Org => fetch_github_org_repos(name).await,
-        crate::RepositoryGroupType::User => todo!(),
+        crate::RepositoryGroupType::User => fetch_github_user_repos(name).await,
     }
 }
 
@@ -152,6 +152,50 @@ pub async fn fetch_github_org_repos(name: &str) -> anyhow::Result<Vec<Entry>> {
                 .items,
         );
     }
+
+    Ok(repos
+        .into_iter()
+        .filter_map(|r| match (r.clone_url, r.fork) {
+            (Some(url), Some(fork)) => Some(Entry {
+                clone_url: url.as_str().to_owned(),
+                is_fork: fork,
+            }),
+            (u, f) => {
+                log::error!(
+                    "'{}': expected fields to be present, but instead clone_url = {u:?}, fork = {f:?}",
+                    r.name
+                );
+                None
+            }
+        })
+        .collect())
+}
+
+/// Fetch all repositories from a GitHub user
+pub async fn fetch_github_user_repos(name: &str) -> anyhow::Result<Vec<Entry>> {
+    let octocrab = octocrab::instance();
+
+    let mut repos: Vec<octocrab::models::Repository> = Vec::new();
+    let mut current_page = 1u32;
+
+    loop {
+        log::info!("fetching page {}...", current_page);
+        let page: Vec<octocrab::models::Repository> = octocrab
+            .get(
+                format!("/users/{name}/repos"),
+                Some(&[("per_page", "100"), ("page", &current_page.to_string())]),
+            )
+            .await?;
+
+        if page.is_empty() {
+            break;
+        }
+
+        repos.extend(page);
+        current_page += 1;
+    }
+
+    log::info!("fetched {} repositories total", repos.len());
 
     Ok(repos
         .into_iter()

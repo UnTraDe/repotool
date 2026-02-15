@@ -66,6 +66,24 @@ pub enum GithubOperation {
         only_forks: bool,
     },
 
+    /// Grab all repositories from a GitHub user
+    User {
+        /// User name
+        name: String,
+
+        /// Compare repository list with a given file, and skip repos already in it
+        #[arg(long)]
+        compare_file: Option<PathBuf>,
+
+        /// Filter out forks
+        #[arg(long, group = "forks")]
+        filter_forks: bool,
+
+        /// Only clone forks
+        #[arg(long, group = "forks")]
+        only_forks: bool,
+    },
+
     /// Grab a single repository from GitHub
     Single {
         /// Repository URL
@@ -85,13 +103,34 @@ pub fn run(params: GrabParams) -> anyhow::Result<()> {
                 compare_file,
                 filter_forks,
                 only_forks,
-            } => grab_github_org(
+            } => grab_github(
                 &params.archive,
                 &params.base_dir,
                 &name,
                 compare_file,
                 filter_forks,
                 only_forks,
+                |n| {
+                    tokio::runtime::Runtime::new()?
+                        .block_on(clone::fetch_github_org_repos(n))
+                },
+            ),
+            GithubOperation::User {
+                name,
+                compare_file,
+                filter_forks,
+                only_forks,
+            } => grab_github(
+                &params.archive,
+                &params.base_dir,
+                &name,
+                compare_file,
+                filter_forks,
+                only_forks,
+                |n| {
+                    tokio::runtime::Runtime::new()?
+                        .block_on(clone::fetch_github_user_repos(n))
+                },
             ),
             GithubOperation::Single { url, output_dir } => {
                 grab_github_single(&params.archive, &params.base_dir, &url, output_dir)
@@ -100,18 +139,19 @@ pub fn run(params: GrabParams) -> anyhow::Result<()> {
     }
 }
 
-fn grab_github_org(
+fn grab_github(
     archive: &std::path::Path,
     base_dir: &std::path::Path,
-    org_name: &str,
+    name: &str,
     compare_file: Option<PathBuf>,
     filter_forks: bool,
     only_forks: bool,
+    fetch_fn: impl FnOnce(&str) -> anyhow::Result<Vec<clone::Entry>>,
 ) -> anyhow::Result<()> {
-    // Create org directory
-    let org_dir = base_dir.join(org_name);
-    fs::create_dir_all(&org_dir)?;
-    log::info!("created org directory: {}", org_dir.display());
+    // Create target directory
+    let target_dir = base_dir.join(name);
+    fs::create_dir_all(&target_dir)?;
+    log::info!("created directory: {}", target_dir.display());
 
     // Load compare file into HashSet (parse as CSV archive format)
     let compare = if let Some(compare_path) = compare_file {
@@ -121,8 +161,7 @@ fn grab_github_org(
     };
 
     // Fetch repos from GitHub API
-    let runtime = tokio::runtime::Runtime::new()?;
-    let repos = runtime.block_on(clone::fetch_github_org_repos(org_name))?;
+    let repos = fetch_fn(name)?;
     let total_count = repos.len();
 
     // Filter by forks
@@ -146,11 +185,11 @@ fn grab_github_org(
     for entry in &repos {
         let repo_name = extract_repo_name_from_url(&entry.clone_url, true)
             .unwrap_or_else(|| entry.clone_url.clone());
-        let target_dir = org_dir.join(&repo_name);
+        let repo_dir = target_dir.join(&repo_name);
 
-        log::info!("cloning {} to {}", entry.clone_url, target_dir.display());
+        log::info!("cloning {} to {}", entry.clone_url, repo_dir.display());
 
-        match clone_mirror(&entry.clone_url, &target_dir) {
+        match clone_mirror(&entry.clone_url, &repo_dir) {
             Ok(()) => {
                 log::info!("successfully cloned {}", repo_name);
                 success_count += 1;
@@ -168,9 +207,9 @@ fn grab_github_org(
         failure_count
     );
 
-    // Scan org directory
-    let scanned = scan::scan_directory(&org_dir, 1)?;
-    log::info!("scanned {} repositories in org directory", scanned.len());
+    // Scan directory
+    let scanned = scan::scan_directory(&target_dir, 1)?;
+    log::info!("scanned {} repositories in directory", scanned.len());
 
     // Append to archive
     append_to_archive(archive, &scanned, base_dir)?;
