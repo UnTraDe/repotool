@@ -88,8 +88,8 @@ function createPanel(res, url, hostname) {
     copyBtn.onmouseover = () => (copyBtn.style.background = "#2ea043");
     copyBtn.onmouseout = () => (copyBtn.style.background = "#238636");
     copyBtn.onclick = () => {
-      const cloneUrl = `${url}.git`;
-      const command = `grab-github-single "${cloneUrl}";`;
+      const command = `repotool grab github single "${url}.git"`;
+
       navigator.clipboard
         .writeText(command)
         .then(() => {
