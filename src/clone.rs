@@ -1,13 +1,42 @@
-use clap::Args;
+use clap::{Args, Subcommand, ValueEnum};
 use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
 use std::{fs, path::PathBuf};
+
+use crate::git_url;
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Platform {
+    Github {
+        #[arg(value_enum)]
+        group_type: RepositoryGroupType,
+
+        input: String,
+    },
+    Gitlab {
+        #[arg(value_enum)]
+        group_type: RepositoryGroupType,
+
+        /// GitLab instance URL (e.g., https://gitlab.com or https://gitlab.archlinux.org)
+        #[arg(short, long)]
+        instance: String,
+
+        /// Group or user name
+        input: String,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone)]
+pub enum RepositoryGroupType {
+    Org,
+    User,
+}
 
 #[derive(Args, Debug)]
 pub struct CloneParams {
     /// Repository type
     #[command(subcommand)]
-    platform: crate::Platform,
+    platform: Platform,
 
     /// Compare repository list with a given file, and only clone the ones that are not in the list
     #[arg(short, long)]
@@ -60,11 +89,11 @@ pub fn clone(params: CloneParams) -> anyhow::Result<()> {
     };
 
     let repos = match params.platform {
-        crate::Platform::Github { group_type, input } => {
+        Platform::Github { group_type, input } => {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(github(group_type, &input))?
         }
-        crate::Platform::Gitlab {
+        Platform::Gitlab {
             group_type,
             instance,
             input,
@@ -89,7 +118,7 @@ pub fn clone(params: CloneParams) -> anyhow::Result<()> {
 
     let repos = repos
         .into_iter()
-        .filter(|e| !is_in_compare_list(&e.clone_url, &compare))
+        .filter(|e| !git_url::is_in_compare_list(&e.clone_url, &compare))
         .collect::<Vec<Entry>>();
 
     log::info!(
@@ -113,10 +142,10 @@ pub fn clone(params: CloneParams) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn github(group_type: crate::RepositoryGroupType, name: &str) -> anyhow::Result<Vec<Entry>> {
+async fn github(group_type: RepositoryGroupType, name: &str) -> anyhow::Result<Vec<Entry>> {
     match group_type {
-        crate::RepositoryGroupType::Org => fetch_github_org_repos(name).await,
-        crate::RepositoryGroupType::User => fetch_github_user_repos(name).await,
+        RepositoryGroupType::Org => fetch_github_org_repos(name).await,
+        RepositoryGroupType::User => fetch_github_user_repos(name).await,
     }
 }
 
@@ -231,16 +260,8 @@ pub fn filter_by_forks(entries: Vec<Entry>, filter_forks: bool, only_forks: bool
         .collect()
 }
 
-/// Filter entries that are not in the compare list
-pub fn filter_by_compare_list(entries: Vec<Entry>, compare: &HashSet<String>) -> Vec<Entry> {
-    entries
-        .into_iter()
-        .filter(|e| !is_in_compare_list(&e.clone_url, compare))
-        .collect()
-}
-
 async fn gitlab(
-    group_type: crate::RepositoryGroupType,
+    group_type: RepositoryGroupType,
     instance: &str,
     name: &str,
 ) -> anyhow::Result<Vec<Entry>> {
@@ -258,7 +279,7 @@ async fn gitlab(
         .await?;
 
     Ok(match group_type {
-        crate::RepositoryGroupType::Org => {
+        RepositoryGroupType::Org => {
             log::info!("fetching projects from GitLab group '{}'...", name);
 
             let endpoint = GroupProjects::builder()
@@ -281,7 +302,7 @@ async fn gitlab(
             log::info!("fetched {} projects total", repos.len());
             repos
         }
-        crate::RepositoryGroupType::User => {
+        RepositoryGroupType::User => {
             anyhow::bail!("User repositories are not yet supported for GitLab")
         }
     }
@@ -293,22 +314,4 @@ async fn gitlab(
         Some(Entry { clone_url, is_fork })
     })
     .collect())
-}
-
-pub fn is_in_compare_list(url: &str, compare: &HashSet<String>) -> bool {
-    if compare.contains(url) {
-        return true;
-    }
-
-    if let Some(url) = url.strip_suffix(".git") {
-        if compare.contains(url) {
-            return true;
-        }
-    } else if compare.contains(&format!("{}.git", url)) {
-        return true;
-    }
-
-    // TODO(tomer) compare across different schemes as well?
-
-    false
 }

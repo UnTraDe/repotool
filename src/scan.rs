@@ -4,6 +4,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::{collections::HashMap, fs};
 
+use crate::archive::Entry;
+
 #[derive(Args, Debug)]
 pub struct ScanParams {
     /// Directory to scan
@@ -31,73 +33,13 @@ pub struct ScanParams {
     depth: usize,
 }
 
-#[derive(Clone)]
-pub struct Entry {
-    pub path: PathBuf,
-    pub remote_url: String,
-    pub last_commit_hash: String,
-    pub last_commit_date: String,
-    pub last_repo_fetch: String,
-}
-
-impl Entry {
-    /// Convert entry to CSV line format, with path relative to base_dir
-    pub fn to_csv_line(&self, base_dir: &Path) -> String {
-        let relative_path = self.path.strip_prefix(base_dir).unwrap_or(&self.path);
-        format!(
-            "{},{},{},{},{}",
-            self.remote_url,
-            relative_path.display(),
-            self.last_commit_hash,
-            self.last_commit_date,
-            self.last_repo_fetch
-        )
-    }
-
-    /// Parse entry from CSV line format (inverse of to_csv_line)
-    /// Returns None for empty or malformed lines
-    pub fn from_csv_line(line: &str, base_dir: &Path) -> Option<Self> {
-        let line = line.trim();
-        if line.is_empty() {
-            return None;
-        }
-
-        let mut parts = line.splitn(5, ',');
-        let remote_url = parts.next()?.to_string();
-        let relative_path = parts.next()?;
-        let last_commit_hash = parts.next()?.to_string();
-        let last_commit_date = parts.next()?.to_string();
-        let last_repo_fetch = parts.next()?.to_string();
-
-        Some(Entry {
-            path: base_dir.join(relative_path),
-            remote_url,
-            last_commit_hash,
-            last_commit_date,
-            last_repo_fetch,
-        })
-    }
-}
-
 pub fn scan(params: ScanParams) -> anyhow::Result<()> {
     let (repositories, irrelevant) = local(&params.directory, 0, params.depth - 1)?;
     let duplicates = find_duplicates(&repositories);
 
     if params.print_output {
         for e in &repositories {
-            let relative_path = e
-                .path
-                .strip_prefix(&params.directory)
-                .unwrap_or(&e.path)
-                .display();
-            println!(
-                "{},{},{},{},{}",
-                e.remote_url,
-                relative_path,
-                e.last_commit_hash,
-                e.last_commit_date,
-                e.last_repo_fetch
-            );
+            println!("{}", e.to_csv_line(&params.directory));
         }
     }
 
@@ -124,20 +66,7 @@ pub fn scan(params: ScanParams) -> anyhow::Result<()> {
         );
 
         for e in &repositories {
-            let relative_path = e
-                .path
-                .strip_prefix(&params.directory)
-                .unwrap_or(&e.path)
-                .display();
-            writeln!(
-                output,
-                "{},{},{},{},{}",
-                e.remote_url,
-                relative_path,
-                e.last_commit_hash,
-                e.last_commit_date,
-                e.last_repo_fetch
-            )?;
+            writeln!(output, "{}", e.to_csv_line(&params.directory))?;
         }
     }
 

@@ -13,6 +13,8 @@ use std::{
 };
 use tiny_http::{Response, Server};
 
+use crate::archive;
+
 const DEBOUNCE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Parser, Debug)]
@@ -53,37 +55,15 @@ struct ArchiveHandle<T> {
     _debouncer: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
 }
 
-#[derive(Clone, Debug)]
-struct RepoMetadata {
-    url: String,
-    path: String,
-    commit_hash: String,
-    commit_date: String,
-    last_fetch: String,
-}
-
-fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<HashMap<String, RepoMetadata>> {
+fn read_and_parse_git_archive(path: &Path) -> anyhow::Result<HashMap<String, archive::Entry>> {
+    let dummy_base = Path::new("");
     let map = std::fs::read_to_string(path)?
         .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 5 {
-                anyhow::bail!("bad line: '{line}'")
-            }
-
-            let metadata = RepoMetadata {
-                url: parts[0].to_string(),
-                path: parts[1].to_string(),
-                commit_hash: parts[2].to_string(),
-                commit_date: parts[3].to_string(),
-                last_fetch: parts[4].to_string(),
-            };
-
-            Ok((metadata.url.to_lowercase(), metadata))
+        .filter_map(|line| {
+            let entry = archive::Entry::from_csv_line(line, dummy_base)?;
+            Some((entry.remote_url.to_lowercase(), entry))
         })
-        .collect::<anyhow::Result<HashMap<String, RepoMetadata>>>()?;
+        .collect();
 
     Ok(map)
 }
@@ -158,7 +138,7 @@ where
 
 fn handle_has_git_repo_req(
     req: HasGitRepoRequest,
-    archive_handle: &ArchiveHandle<HashMap<String, RepoMetadata>>,
+    archive_handle: &ArchiveHandle<HashMap<String, archive::Entry>>,
 ) -> anyhow::Result<Response<std::io::Cursor<Vec<u8>>>> {
     log::info!("handle_has_git_repo_req: {req:?}");
 
@@ -219,10 +199,10 @@ fn handle_has_git_repo_req(
         let mut metadata = None;
 
         for variant in &variants {
-            if let Some(repo_meta) = archive.get(variant) {
-                existing.push(repo_meta.url.clone());
+            if let Some(entry) = archive.get(variant) {
+                existing.push(entry.remote_url.clone());
                 if metadata.is_none() {
-                    metadata = Some(repo_meta.clone());
+                    metadata = Some(entry.clone());
                 }
             }
         }
@@ -235,11 +215,11 @@ fn handle_has_git_repo_req(
             "exists": !existing.is_empty(),
             "existing": existing,
             "metadata": {
-                "url": meta.url,
-                "path": meta.path,
-                "commit_hash": meta.commit_hash,
-                "commit_date": meta.commit_date,
-                "last_fetch": meta.last_fetch
+                "url": meta.remote_url,
+                "path": meta.path.to_string_lossy(),
+                "commit_hash": meta.last_commit_hash,
+                "commit_date": meta.last_commit_date,
+                "last_fetch": meta.last_repo_fetch
             }
         })
     } else {
@@ -380,14 +360,16 @@ pub fn run(args: ServeParams) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::HasGitRepoRequest;
+    use crate::archive;
     use rstest::{fixture, rstest};
     use std::{
         collections::HashSet,
+        path::PathBuf,
         sync::{Arc, Mutex},
     };
 
     #[fixture]
-    pub fn archive() -> super::ArchiveHandle<std::collections::HashMap<String, super::RepoMetadata>>
+    pub fn archive_handle() -> super::ArchiveHandle<std::collections::HashMap<String, archive::Entry>>
     {
         let urls = [
             "https://github.com/rust-lang/rust.git",
@@ -399,17 +381,20 @@ mod tests {
             "git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git",
         ];
 
-        let map: std::collections::HashMap<String, super::RepoMetadata> = urls
+        let map: std::collections::HashMap<String, archive::Entry> = urls
             .iter()
             .map(|url| {
-                let metadata = super::RepoMetadata {
-                    url: url.to_string(),
-                    path: format!("{}.git", url.split('/').next_back().unwrap_or("repo")),
-                    commit_hash: "abc123".to_string(),
-                    commit_date: "2025-01-01 12:00:00".to_string(),
-                    last_fetch: "never".to_string(),
+                let entry = archive::Entry {
+                    remote_url: url.to_string(),
+                    path: PathBuf::from(format!(
+                        "{}.git",
+                        url.split('/').next_back().unwrap_or("repo")
+                    )),
+                    last_commit_hash: "abc123".to_string(),
+                    last_commit_date: "2025-01-01 12:00:00".to_string(),
+                    last_repo_fetch: "never".to_string(),
                 };
-                (url.to_string(), metadata)
+                (url.to_string(), entry)
             })
             .collect();
 
@@ -427,11 +412,12 @@ mod tests {
     #[case("HTTPS://GITHUB.COM/rust-lang/rust.git", &["https://github.com/rust-lang/rust.git", "http://github.com/rust-lang/rust.git", "git://github.com/rust-lang/rust", "github.com/rust-lang/rust"])]
     #[case("GITHUB.COM/RUST-LANG/RUST-CLIPPY", &[ "https://github.com/rust-lang/rust-clippy.git", "http://github.com/rust-lang/rust-clippy"])]
     fn handle_has_git_repo_req(
-        archive: super::ArchiveHandle<std::collections::HashMap<String, super::RepoMetadata>>,
+        archive_handle: super::ArchiveHandle<std::collections::HashMap<String, archive::Entry>>,
         #[case] url: String,
         #[case] expected: &[&str],
     ) -> anyhow::Result<()> {
-        let response = super::handle_has_git_repo_req(HasGitRepoRequest { url }, &archive)?;
+        let response =
+            super::handle_has_git_repo_req(HasGitRepoRequest { url }, &archive_handle)?;
         assert_eq!(response.status_code(), 200);
         let response_json: serde_json::Value =
             serde_json::from_reader(response.into_reader()).unwrap();
