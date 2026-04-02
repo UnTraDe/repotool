@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod archive;
 mod clone;
+mod fetch;
 mod fsck;
 mod git_url;
 mod grab;
@@ -31,6 +32,9 @@ enum Commands {
     /// Grab repositories (clone and add to archive)
     Grab(grab::GrabParams),
 
+    /// Fetch all remotes in mirror repositories
+    Fetch(fetch::FetchParams),
+
     /// Run git fsck on bare repositories
     Fsck(fsck::FsckParams),
 
@@ -46,6 +50,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Scan(params) => scan::scan(params),
         Commands::Clone(params) => clone::clone(params),
+        Commands::Fetch(params) => fetch::run(params),
         Commands::Fsck(params) => fsck::run(params),
         Commands::Grab(params) => grab::run(params),
         Commands::Hash(hash) => hash::run(hash),
