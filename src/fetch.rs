@@ -1,12 +1,24 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::Args;
+
+use crate::{archive, scan};
 
 #[derive(Args, Debug)]
 pub struct FetchParams {
     /// One or more parent directories to scan and fetch
     pub dirs: Vec<PathBuf>,
+
+    /// Path to archive file to update after fetching
+    #[arg(long, env = "REPOTOOL_ARCHIVE")]
+    archive: Option<PathBuf>,
+
+    /// Base directory for computing relative paths in the archive
+    #[arg(long, env = "REPOTOOL_BASE_DIR")]
+    base_dir: Option<PathBuf>,
 }
 
 pub fn run(params: FetchParams) -> anyhow::Result<()> {
@@ -30,6 +42,60 @@ pub fn run(params: FetchParams) -> anyhow::Result<()> {
         }
     }
 
+    if let Some(archive_path) = &params.archive {
+        let base_dir = params.base_dir.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--base-dir is required when --archive is specified")
+        })?;
+        update_archive(archive_path, base_dir, &params.dirs)?;
+    }
+
+    Ok(())
+}
+
+fn update_archive(archive_path: &Path, base_dir: &Path, dirs: &[PathBuf]) -> anyhow::Result<()> {
+    // Rescan all fetched dirs to get fresh entries (updated last_repo_fetch, etc.)
+    let mut fresh: Vec<archive::Entry> = Vec::new();
+    for dir in dirs {
+        let mut entries = scan::scan_directory(dir, 2)?;
+        fresh.append(&mut entries);
+    }
+
+    // Load existing archive (or start empty)
+    let mut existing: Vec<archive::Entry> = if archive_path.exists() {
+        archive::load_entries(archive_path, base_dir)?
+    } else {
+        Vec::new()
+    };
+
+    // Build index: remote_url → position in existing vec
+    let mut index: HashMap<String, usize> = existing
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.remote_url.clone(), i))
+        .collect();
+
+    for entry in fresh {
+        match index.get(&entry.remote_url) {
+            Some(&pos) => existing[pos] = entry,
+            None => {
+                index.insert(entry.remote_url.clone(), existing.len());
+                existing.push(entry);
+            }
+        }
+    }
+
+    // Rewrite archive
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(archive_path)?;
+
+    for entry in &existing {
+        writeln!(file, "{}", entry.to_csv_line(base_dir))?;
+    }
+
+    log::info!("updated archive with {} entries", existing.len());
     Ok(())
 }
 

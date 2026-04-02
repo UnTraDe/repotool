@@ -50,6 +50,19 @@ impl Entry {
     }
 }
 
+/// Load all entries from an archive file
+pub fn load_entries(path: &Path, base_dir: &Path) -> io::Result<Vec<Entry>> {
+    let file = std::fs::File::open(path)?;
+    let reader = io::BufReader::new(file);
+    Ok(reader
+        .lines()
+        .filter_map(|line| {
+            line.ok()
+                .and_then(|l| Entry::from_csv_line(&l, base_dir))
+        })
+        .collect())
+}
+
 /// Load URLs from an archive file (CSV format with remote_url as first field)
 pub fn load_urls(path: &Path) -> io::Result<HashSet<String>> {
     let file = std::fs::File::open(path)?;
