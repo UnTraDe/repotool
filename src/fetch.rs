@@ -19,6 +19,10 @@ pub struct FetchParams {
     /// Base directory for computing relative paths in the archive
     #[arg(long, env = "REPOTOOL_BASE_DIR")]
     base_dir: Option<PathBuf>,
+
+    /// Print git fetch output to stdout
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 pub fn run(params: FetchParams) -> anyhow::Result<()> {
@@ -26,7 +30,7 @@ pub fn run(params: FetchParams) -> anyhow::Result<()> {
         println!("=== Fetching in {} ===", parent.display());
 
         if parent.join("HEAD").exists() {
-            fetch_repo(parent, None);
+            fetch_repo(parent, None, params.verbose);
         } else {
             let mut entries: Vec<_> = std::fs::read_dir(parent)?
                 .filter_map(|e| e.ok())
@@ -37,7 +41,7 @@ pub fn run(params: FetchParams) -> anyhow::Result<()> {
             for entry in entries {
                 let subdir = entry.path();
                 println!("{}", subdir.display());
-                fetch_repo(parent, Some(&subdir));
+                fetch_repo(parent, Some(&subdir), params.verbose);
             }
         }
     }
@@ -102,7 +106,7 @@ fn update_archive(archive_path: &Path, base_dir: &Path, dirs: &[PathBuf]) -> any
 /// Run `git fetch --all -p` for a repository.
 /// If `git_dir` is `Some`, uses `--git-dir` (for bare repos referenced from a parent dir).
 /// If `git_dir` is `None`, uses `-C parent` to run inside the repo itself.
-fn fetch_repo(work_dir: &PathBuf, git_dir: Option<&PathBuf>) {
+fn fetch_repo(work_dir: &PathBuf, git_dir: Option<&PathBuf>, verbose: bool) {
     let mut cmd = Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 
@@ -117,10 +121,12 @@ fn fetch_repo(work_dir: &PathBuf, git_dir: Option<&PathBuf>) {
     match cmd.output() {
         Ok(output) => {
             if !output.stdout.is_empty() {
-                log::info!("{}", String::from_utf8_lossy(&output.stdout).trim_end());
+                let text = String::from_utf8_lossy(&output.stdout);
+                if verbose { print!("{}", text); } else { log::info!("{}", text.trim_end()); }
             }
             if !output.stderr.is_empty() {
-                log::info!("{}", String::from_utf8_lossy(&output.stderr).trim_end());
+                let text = String::from_utf8_lossy(&output.stderr);
+                if verbose { eprint!("{}", text); } else { log::info!("{}", text.trim_end()); }
             }
             if !output.status.success() {
                 log::warn!(
