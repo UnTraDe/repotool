@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`repotool` is a Rust CLI tool for managing and analyzing Git repositories. It provides functionality for scanning local filesystems for repositories, cloning repositories from platforms like GitHub and GitLab, computing file hashes, grabbing repositories into archives, and serving repository metadata via HTTP.
+`repotool` is a Rust CLI tool for managing and analyzing Git repositories. It provides functionality for scanning local filesystems for repositories, cloning repositories from platforms like GitHub and GitLab, fetching remotes, computing file hashes, grabbing repositories into archives, and serving repository metadata via HTTP.
 
 ## Build and Test Commands
 
@@ -45,7 +45,7 @@ RUST_LOG=debug cargo run -- <subcommand>
 
 ## Architecture
 
-The project is organized into six main command modules, each implementing a distinct subcommand:
+The project is organized into command modules (one per subcommand) plus shared utility modules:
 
 ### 1. Scan Module (`src/scan.rs`)
 Recursively scans local directories to find Git repositories and extract their remote URLs.
@@ -93,6 +93,19 @@ Higher-level command that combines cloning a repository and adding it to an arch
 - Clones a repository (mirror) and registers it in the archive file in one operation
 - Parses and normalizes repository URLs from various formats
 - Includes unit tests for URL parsing logic
+
+### 7. Fetch Module (`src/fetch.rs`)
+Runs `git fetch --all -p` on all repositories under one or more parent directories.
+- Detects bare repos by checking for a `HEAD` file directly in the directory
+- Optionally updates an archive file after fetching by rescanning the fetched dirs
+- Supports `--verbose` flag to print git output directly; otherwise routes through `log::info!`
+- Requires `--base-dir` when `--archive` is specified (used for computing relative paths)
+
+### Shared Modules
+
+**`src/archive.rs`** — Data model and I/O for the CSV archive format. Defines `Entry` (the in-memory struct) and provides `load_entries`, `load_urls`, `to_csv_line`, and `from_csv_line`. Used by scan, grab, fetch, and serve.
+
+**`src/git_url.rs`** — URL parsing utilities shared by clone and grab. Provides `extract_repo_name` (handles SSH and HTTPS formats) and `is_in_compare_list` / `filter_by_compare_list` (deduplication against existing archives). Includes unit tests for URL parsing.
 
 ### Main Entry Point (`src/main.rs`)
 Uses `clap` with derive macros for CLI argument parsing. Sets up logging with `pretty_env_logger` (defaults to info level).

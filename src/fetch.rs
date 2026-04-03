@@ -78,12 +78,14 @@ fn update_archive(archive_path: &Path, base_dir: &Path, dirs: &[PathBuf]) -> any
         .map(|(i, e)| (e.remote_url.clone(), i))
         .collect();
 
+    let (mut updated, mut added) = (0usize, 0usize);
     for entry in fresh {
         match index.get(&entry.remote_url) {
-            Some(&pos) => existing[pos] = entry,
+            Some(&pos) => { existing[pos] = entry; updated += 1; }
             None => {
                 index.insert(entry.remote_url.clone(), existing.len());
                 existing.push(entry);
+                added += 1;
             }
         }
     }
@@ -99,7 +101,7 @@ fn update_archive(archive_path: &Path, base_dir: &Path, dirs: &[PathBuf]) -> any
         writeln!(file, "{}", entry.to_csv_line(base_dir))?;
     }
 
-    log::info!("updated archive with {} entries", existing.len());
+    log::info!("updated archive: {} updated, {} added", updated, added);
     Ok(())
 }
 
