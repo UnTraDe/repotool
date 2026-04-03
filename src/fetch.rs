@@ -26,7 +26,13 @@ pub struct FetchParams {
 }
 
 pub fn run(params: FetchParams) -> anyhow::Result<()> {
-    for parent in &params.dirs {
+    let dirs: Vec<PathBuf> = if let Some(base) = &params.base_dir {
+        params.dirs.iter().map(|d| base.join(d)).collect()
+    } else {
+        params.dirs.clone()
+    };
+
+    for parent in &dirs {
         println!("=== Fetching in {} ===", parent.display());
 
         if parent.join("HEAD").exists() {
@@ -50,7 +56,7 @@ pub fn run(params: FetchParams) -> anyhow::Result<()> {
         let base_dir = params.base_dir.as_ref().ok_or_else(|| {
             anyhow::anyhow!("--base-dir is required when --archive is specified")
         })?;
-        update_archive(archive_path, base_dir, &params.dirs)?;
+        update_archive(archive_path, base_dir, &dirs)?;
     }
 
     Ok(())
