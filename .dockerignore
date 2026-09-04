@@ -1,0 +1,17 @@
+# Only the host-built binary is needed in the build context.
+target/*
+!target/release
+target/release/*
+!target/release/repotool
+
+.git/
+.claude/
+src/
+Cargo.toml
+Cargo.lock
+Dockerfile
+.dockerignore
+docker-compose.yml
+*.md
+repo-checker.user.js
+repotool.service

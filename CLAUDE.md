@@ -134,6 +134,38 @@ Uses `clap` with derive macros for CLI argument parsing. Sets up logging with `p
 - The grab module includes unit tests for URL parsing
 - The hash module writes incrementally to disk (configurable sync interval) to avoid losing progress on crashes
 
+## Docker
+
+`Dockerfile` is runtime-only: the binary is built on the host with `cargo build --release` and
+copied in from `target/release/`. The image is `debian:trixie-slim` plus `git` and
+`openssh-client` — `fetch`, `grab`, and `fsck` shell out to the `git` binary, so it must be
+present at runtime. Intended for running the archive commands directly on the NAS instead of
+over NFS.
+
+Notes:
+- The host binary must match the target architecture (amd64 for TrueNAS SCALE) and link against
+  a glibc no newer than the base image's. Trixie provides 2.41; check what the binary needs with
+  `objdump -T target/release/repotool | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1` and raise
+  the `BASE_IMAGE` build arg if it ever exceeds that.
+- `git config --system --add safe.directory '*'` is set in the image; without it git refuses to
+  operate on repos owned by a different UID than the container user.
+- The entrypoint is `repotool`, so subcommands are passed as the container command.
+- `UID`/`GID` build args (and `user:` in `docker-compose.yml`) must match the owner of the
+  archive dataset on the host.
+- `serve` is not part of this deployment — it runs elsewhere.
+
+```bash
+cargo build --release
+docker build -t repotool:latest .
+
+# one-shot command
+docker compose run --rm repotool fetch --base-dir /data /data/repos
+```
+
+`DEPLOY.md` is the operational runbook for getting the image onto the NAS (build host
+requirements, `docker save` over SSH, running and scheduling commands there). Keep it in sync when
+the Dockerfile or compose file changes.
+
 ## Archive Data Format
 
 The scan output / archive format is CSV:
