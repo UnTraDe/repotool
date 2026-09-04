@@ -25,6 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         zlib1g \
     && (apt-get install -y --no-install-recommends libssl3t64 \
         || apt-get install -y --no-install-recommends libssl3) \
+    # libssh2-sys links the system libssh2; git pulls it in transitively via curl,
+    # but depend on it explicitly rather than by accident.
+    && (apt-get install -y --no-install-recommends libssh2-1t64 \
+        || apt-get install -y --no-install-recommends libssh2-1) \
     && rm -rf /var/lib/apt/lists/* \
     # The archive pool is owned by whatever UID TrueNAS uses; without this git
     # refuses to touch repos it considers "dubious ownership".
