@@ -46,6 +46,20 @@ objdump -T target/release/repotool | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -
 If that prints something higher than 2.41, raise `BASE_IMAGE` to a newer base
 (`--build-arg BASE_IMAGE=debian:forky-slim`) or build inside a container instead.
 
+Then confirm the binary needs nothing the base image lacks:
+
+```bash
+ldd target/release/repotool
+```
+
+Everything listed has to exist in `debian:trixie-slim` (plus the packages the Dockerfile installs).
+`libc`, `libm`, `libgcc_s`, `libz`, `libssl.so.3`/`libcrypto.so.3`, and `libssh2.so.1` are all
+covered. A `libgit2.so.*` line is not — that means the build linked the host's libgit2 instead of
+vendoring it, and the container will fail at startup with
+`error while loading shared libraries: libgit2.so.1.9`. `git2` is configured with
+`vendored-libgit2` in `Cargo.toml` to prevent exactly that; if the line reappears, the feature is
+not taking effect.
+
 Then build the image, passing the dataset's owner so the in-image user matches:
 
 ```bash

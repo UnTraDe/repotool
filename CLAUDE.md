@@ -154,6 +154,10 @@ Notes:
 - `UID`/`GID` build args (and `user:` in `docker-compose.yml`) must match the owner of the
   archive dataset on the host.
 - `serve` is not part of this deployment — it runs elsewhere.
+- `git2` enables `vendored-libgit2` so libgit2 is compiled into the binary. Without it the build
+  links the host's `libgit2.so.<version>`, which Debian does not ship under the same soname, and
+  the container fails at startup. Check with `ldd target/release/repotool` — no `libgit2` line
+  should appear.
 
 ```bash
 cargo build --release
