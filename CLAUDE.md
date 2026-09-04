@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 * Ask clarifying questions if something is not well defined or understood
 * Feel free to push back if you think an instruction is missing something or didn't consider all cases
 * When adding new features or new modules, or when you think a change is high level enough, update this file with the new documentation.
+* This is a single-developer repository. Always commit directly to `master` — do not create feature branches or pull requests, and do not branch before committing.
 
 ## Project Overview
 
