@@ -35,7 +35,9 @@ RUN groupadd -g "${GID}" repotool \
     # keep HOME writable even when the container is started with a different --user
     && chmod 0777 /home/repotool
 
-COPY --chmod=0755 target/release/repotool /usr/local/bin/repotool
+# Plain COPY (no --chmod) so this builds with the legacy builder as well as
+# BuildKit; cargo emits the binary 0755 and COPY preserves the source mode.
+COPY target/release/repotool /usr/local/bin/repotool
 
 ENV HOME=/home/repotool \
     RUST_LOG=info \
