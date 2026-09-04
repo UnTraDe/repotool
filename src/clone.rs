@@ -18,7 +18,7 @@ pub enum Platform {
         group_type: RepositoryGroupType,
 
         /// GitLab instance URL (e.g., https://gitlab.com or https://gitlab.archlinux.org)
-        #[arg(short, long)]
+        #[arg(short, long, default_value = "https://gitlab.com")]
         instance: String,
 
         /// Group or user name
@@ -265,53 +265,108 @@ async fn gitlab(
     instance: &str,
     name: &str,
 ) -> anyhow::Result<Vec<Entry>> {
+    match group_type {
+        RepositoryGroupType::Org => fetch_gitlab_org_repos(instance, name).await,
+        RepositoryGroupType::User => fetch_gitlab_user_repos(instance, name).await,
+    }
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct GitLabProject {
+    http_url_to_repo: Option<String>,
+    forked_from_project: Option<serde_json::Value>,
+}
+
+async fn build_gitlab_client(instance: &str) -> anyhow::Result<gitlab::AsyncGitlab> {
+    // GitlabBuilder wants a bare host and always prepends its own scheme, so a
+    // full instance URL (e.g. "https://gitlab.com", as our own --help text
+    // suggests) must have its scheme stripped first.
+    let (host, insecure) = if let Some(host) = instance.strip_prefix("https://") {
+        (host, false)
+    } else if let Some(host) = instance.strip_prefix("http://") {
+        (host, true)
+    } else {
+        (instance, false)
+    };
+    let host = host.trim_end_matches('/');
+
+    // `new_unauthenticated` (rather than `new` with an empty token) is required here:
+    // an empty `Auth::Token` still triggers a `/user` auth-check call on connect, which
+    // 401s for anonymous access to public groups/users.
+    let mut builder = gitlab::GitlabBuilder::new_unauthenticated(host);
+    if insecure {
+        builder.insecure();
+    }
+
+    Ok(builder.build_async().await?)
+}
+
+fn gitlab_projects_to_entries(repos: Vec<GitLabProject>) -> Vec<Entry> {
+    repos
+        .into_iter()
+        .filter_map(|r| {
+            let clone_url = r.http_url_to_repo?;
+            let is_fork = r.forked_from_project.is_some();
+
+            Some(Entry { clone_url, is_fork })
+        })
+        .collect()
+}
+
+/// Fetch all repositories from a GitLab group
+pub async fn fetch_gitlab_org_repos(instance: &str, name: &str) -> anyhow::Result<Vec<Entry>> {
     use gitlab::api::{groups::projects::GroupProjects, ApiError, AsyncQuery};
-    use serde::Deserialize;
 
-    #[derive(Deserialize, Debug)]
-    struct GitLabProject {
-        http_url_to_repo: Option<String>,
-        forked_from_project: Option<serde_json::Value>,
-    }
+    let client = build_gitlab_client(instance).await?;
 
-    let client = gitlab::GitlabBuilder::new(instance, "")
-        .build_async()
-        .await?;
+    log::info!("fetching projects from GitLab group '{}'...", name);
 
-    Ok(match group_type {
-        RepositoryGroupType::Org => {
-            log::info!("fetching projects from GitLab group '{}'...", name);
+    let endpoint = GroupProjects::builder()
+        .group(name)
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build GitLab query: {}", e))?;
 
-            let endpoint = GroupProjects::builder()
-                .group(name)
-                .build()
-                .map_err(|e| anyhow::anyhow!("failed to build GitLab query: {}", e))?;
+    // Query all results using the pager
+    let repos: Vec<GitLabProject> = gitlab::api::paged(endpoint, gitlab::api::Pagination::All)
+        .query_async(&client)
+        .await
+        .map_err(|e: gitlab::api::ApiError<_>| match e {
+            ApiError::GitlabService { status, .. } if status.as_u16() == 404 => {
+                anyhow::anyhow!("Group '{}' not found", name)
+            }
+            e => anyhow::anyhow!("GitLab API error: {}", e),
+        })?;
 
-            // Query all results using the pager
-            let repos: Vec<GitLabProject> =
-                gitlab::api::paged(endpoint, gitlab::api::Pagination::All)
-                    .query_async(&client)
-                    .await
-                    .map_err(|e: gitlab::api::ApiError<_>| match e {
-                        ApiError::GitlabService { status, .. } if status.as_u16() == 404 => {
-                            anyhow::anyhow!("Group '{}' not found", name)
-                        }
-                        e => anyhow::anyhow!("GitLab API error: {}", e),
-                    })?;
+    log::info!("fetched {} projects total", repos.len());
 
-            log::info!("fetched {} projects total", repos.len());
-            repos
-        }
-        RepositoryGroupType::User => {
-            anyhow::bail!("User repositories are not yet supported for GitLab")
-        }
-    }
-    .into_iter()
-    .filter_map(|r| {
-        let clone_url = r.http_url_to_repo?;
-        let is_fork = r.forked_from_project.is_some();
+    Ok(gitlab_projects_to_entries(repos))
+}
 
-        Some(Entry { clone_url, is_fork })
-    })
-    .collect())
+/// Fetch all repositories from a GitLab user
+pub async fn fetch_gitlab_user_repos(instance: &str, name: &str) -> anyhow::Result<Vec<Entry>> {
+    use gitlab::api::{users::UserProjects, ApiError, AsyncQuery};
+
+    let client = build_gitlab_client(instance).await?;
+
+    log::info!("fetching projects from GitLab user '{}'...", name);
+
+    let endpoint = UserProjects::builder()
+        .user(name)
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build GitLab query: {}", e))?;
+
+    // Query all results using the pager
+    let repos: Vec<GitLabProject> = gitlab::api::paged(endpoint, gitlab::api::Pagination::All)
+        .query_async(&client)
+        .await
+        .map_err(|e: gitlab::api::ApiError<_>| match e {
+            ApiError::GitlabService { status, .. } if status.as_u16() == 404 => {
+                anyhow::anyhow!("User '{}' not found", name)
+            }
+            e => anyhow::anyhow!("GitLab API error: {}", e),
+        })?;
+
+    log::info!("fetched {} projects total", repos.len());
+
+    Ok(gitlab_projects_to_entries(repos))
 }

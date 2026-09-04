@@ -28,6 +28,16 @@ pub enum GrabPlatform {
         #[command(subcommand)]
         operation: GithubOperation,
     },
+
+    /// Grab repositories from GitLab
+    Gitlab {
+        /// GitLab instance URL (e.g., https://gitlab.com or https://gitlab.archlinux.org)
+        #[arg(short, long, default_value = "https://gitlab.com")]
+        instance: String,
+
+        #[command(subcommand)]
+        operation: GitlabOperation,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -79,6 +89,55 @@ pub enum GithubOperation {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum GitlabOperation {
+    /// Grab all repositories from a GitLab group
+    Org {
+        /// Group name
+        name: String,
+
+        /// Compare repository list with a given file, and skip repos already in it
+        #[arg(long)]
+        compare_file: Option<PathBuf>,
+
+        /// Filter out forks
+        #[arg(long, group = "forks")]
+        filter_forks: bool,
+
+        /// Only clone forks
+        #[arg(long, group = "forks")]
+        only_forks: bool,
+    },
+
+    /// Grab all repositories from a GitLab user
+    User {
+        /// User name
+        name: String,
+
+        /// Compare repository list with a given file, and skip repos already in it
+        #[arg(long)]
+        compare_file: Option<PathBuf>,
+
+        /// Filter out forks
+        #[arg(long, group = "forks")]
+        filter_forks: bool,
+
+        /// Only clone forks
+        #[arg(long, group = "forks")]
+        only_forks: bool,
+    },
+
+    /// Grab a single repository from GitLab
+    Single {
+        /// Repository URL
+        url: String,
+
+        /// Override default directory name (extracted from URL)
+        #[arg(long)]
+        output_dir: Option<String>,
+    },
+}
+
 pub fn run(params: GrabParams) -> anyhow::Result<()> {
     match params.platform {
         GrabPlatform::Github { operation } => match operation {
@@ -87,7 +146,7 @@ pub fn run(params: GrabParams) -> anyhow::Result<()> {
                 compare_file,
                 filter_forks,
                 only_forks,
-            } => grab_github(
+            } => grab_repos(
                 &params.archive,
                 &params.base_dir,
                 &name,
@@ -104,7 +163,7 @@ pub fn run(params: GrabParams) -> anyhow::Result<()> {
                 compare_file,
                 filter_forks,
                 only_forks,
-            } => grab_github(
+            } => grab_repos(
                 &params.archive,
                 &params.base_dir,
                 &name,
@@ -117,13 +176,52 @@ pub fn run(params: GrabParams) -> anyhow::Result<()> {
                 },
             ),
             GithubOperation::Single { url, output_dir } => {
-                grab_github_single(&params.archive, &params.base_dir, &url, output_dir)
+                grab_single(&params.archive, &params.base_dir, &url, output_dir)
+            }
+        },
+        GrabPlatform::Gitlab { instance, operation } => match operation {
+            GitlabOperation::Org {
+                name,
+                compare_file,
+                filter_forks,
+                only_forks,
+            } => grab_repos(
+                &params.archive,
+                &params.base_dir,
+                &name,
+                compare_file,
+                filter_forks,
+                only_forks,
+                |n| {
+                    tokio::runtime::Runtime::new()?
+                        .block_on(clone::fetch_gitlab_org_repos(&instance, n))
+                },
+            ),
+            GitlabOperation::User {
+                name,
+                compare_file,
+                filter_forks,
+                only_forks,
+            } => grab_repos(
+                &params.archive,
+                &params.base_dir,
+                &name,
+                compare_file,
+                filter_forks,
+                only_forks,
+                |n| {
+                    tokio::runtime::Runtime::new()?
+                        .block_on(clone::fetch_gitlab_user_repos(&instance, n))
+                },
+            ),
+            GitlabOperation::Single { url, output_dir } => {
+                grab_single(&params.archive, &params.base_dir, &url, output_dir)
             }
         },
     }
 }
 
-fn grab_github(
+fn grab_repos(
     archive: &std::path::Path,
     base_dir: &std::path::Path,
     name: &str,
@@ -205,7 +303,7 @@ fn grab_github(
     Ok(())
 }
 
-fn grab_github_single(
+fn grab_single(
     archive_path: &std::path::Path,
     base_dir: &std::path::Path,
     url: &str,

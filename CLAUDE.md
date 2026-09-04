@@ -56,8 +56,9 @@ Recursively scans local directories to find Git repositories and extract their r
 
 ### 2. Clone Module (`src/clone.rs`)
 Generates lists of repositories to clone from platforms like GitHub and GitLab.
-- Supports GitHub organizations via `octocrab` and GitLab groups via the `gitlab` crate
-- GitLab supports custom instances via `--instance` flag
+- Supports GitHub organizations/users via `octocrab` and GitLab groups/users via the `gitlab` crate
+- GitLab's `-i/--instance` flag defaults to `https://gitlab.com`, overridable for self-hosted instances; connects unauthenticated (no token support yet)
+- Exposes `pub async fn` fetch helpers per platform/scope (`fetch_github_org_repos`, `fetch_github_user_repos`, `fetch_gitlab_org_repos`, `fetch_gitlab_user_repos`) that are reused by the grab module
 - Uses async/await with Tokio runtime for API interaction
 - Can filter by fork status (exclude forks, only forks, or include all)
 - Supports comparison with existing repository lists to avoid duplicates
@@ -91,8 +92,8 @@ Runs `git fsck --full --no-dangling` on bare repositories discovered via the sca
 ### 6. Grab Module (`src/grab.rs`)
 Higher-level command that combines cloning a repository and adding it to an archive atomically.
 - Clones a repository (mirror) and registers it in the archive file in one operation
-- Parses and normalizes repository URLs from various formats
-- Includes unit tests for URL parsing logic
+- Supports both GitHub (`grab github`) and GitLab (`grab gitlab`, requires `-i/--instance`) as platforms, each with `org`, `user`, and `single` operations
+- Parses and normalizes repository URLs from various formats (see `src/git_url.rs` for URL-parsing unit tests, covering both GitHub and GitLab/self-hosted formats)
 
 ### 7. Fetch Module (`src/fetch.rs`)
 Runs `git fetch --all -p` on all repositories under one or more parent directories.

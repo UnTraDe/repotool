@@ -139,4 +139,36 @@ mod tests {
     fn test_extract_repo_name_invalid() {
         assert_eq!(extract_repo_name("not-a-url", false), None);
     }
+
+    #[test]
+    fn test_extract_repo_name_gitlab_https() {
+        assert_eq!(
+            extract_repo_name("https://gitlab.com/group/repo.git", false),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_gitlab_ssh() {
+        assert_eq!(
+            extract_repo_name("git@gitlab.com:group/repo.git", false),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_gitlab_self_hosted_nested_group_ssh() {
+        assert_eq!(
+            extract_repo_name("git@gitlab.example.com:group/subgroup/repo.git", false),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_gitlab_self_hosted_nested_group_https() {
+        assert_eq!(
+            extract_repo_name("https://gitlab.example.com/group/subgroup/repo", true),
+            Some("repo".to_string())
+        );
+    }
 }
