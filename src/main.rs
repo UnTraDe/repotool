@@ -43,7 +43,12 @@ enum Commands {
 }
 
 fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
+    // Default to info. `pretty_env_logger::init()` on its own defaults to error, which hides the
+    // progress and summary output the commands log. RUST_LOG still overrides when set.
+    pretty_env_logger::formatted_builder()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
     let cli = Cli::parse();
     log::trace!("cli {cli:?}");
 
