@@ -74,23 +74,31 @@ docker run --rm repotool:latest --version
 
 ## 2. Ship it to the NAS
 
-Stream the image over SSH — no registry, no intermediate file:
+Export the image to an **uncompressed** tar, then rsync it over:
 
 ```bash
-docker save repotool:latest | gzip | ssh truenas.local 'sudo docker load'
+docker save repotool:latest > repotool.tar
 ```
-
-If the pipe is awkward (sudo prompting for a password over a pipe, flaky link), stage it instead:
 
 ```bash
-docker save repotool:latest | gzip > repotool.tar.gz && scp repotool.tar.gz truenas.local:/mnt/red-cluster1/tmp/
+rsync -a --inplace --partial --info=progress2 -z repotool.tar truenas.local:/mnt/red-cluster1/tmp/
 ```
 
-then on the NAS:
+then load it on the NAS:
 
 ```bash
-sudo docker load < /mnt/red-cluster1/tmp/repotool.tar.gz
+ssh truenas.local 'sudo docker load < /mnt/red-cluster1/tmp/repotool.tar'
 ```
+
+Leave `repotool.tar` in place on both ends. rsync then transfers only the blocks that changed
+since the last deploy, which for a rebuild is essentially just the repotool layer — the ~130 MB of
+Debian and git layers underneath are identical every time and get skipped.
+
+Do not gzip the tar. Compressing it first defeats the delta algorithm: a one-byte change early in
+the stream alters every compressed byte after it, so rsync ends up resending the whole file. `-z`
+compresses on the wire instead, which gives the same bandwidth saving without breaking the diff.
+`--inplace` is what lets rsync rewrite the existing destination file block by block rather than
+building a fresh copy, and `--partial` keeps a half-finished transfer around to resume from.
 
 Verify it landed:
 
