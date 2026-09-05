@@ -142,7 +142,7 @@ the command if you need more.
   just rebuild.
 - Re-deploying is the same three steps. Docker replaces the `repotool:latest` tag on load; the old
   image layers stay behind as untagged leftovers, so `sudo docker image prune` occasionally.
-- Tag with a version (`repotool:0.7.2`) instead of `latest` if you want to keep a rollback target
+- Tag with a version (`repotool:0.7.3`) instead of `latest` if you want to keep a rollback target
   on the NAS.
 - For `git@` remotes, mount a key into the container (`-v /mnt/red-cluster1/appdata/repotool/ssh:/home/repotool/.ssh:ro`)
   — the image includes `openssh-client` but carries no keys.
