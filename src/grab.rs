@@ -359,18 +359,25 @@ fn append_to_archive(
         HashSet::new()
     };
 
-    // Open archive for appending (create if doesn't exist)
-    let mut file = OpenOptions::new().create(true).append(true).open(archive_path)?;
-
+    // Build the whole appendix up front and write it in one call. Writing line by line leaves the
+    // archive half-updated between syscalls, which a reader — or a file-syncing tool watching the
+    // directory — can pick up mid-way.
+    let mut appendix = String::new();
     let mut added_count = 0;
     for entry in entries {
         if !git_url::is_in_compare_list(&entry.remote_url, &existing) {
-            writeln!(file, "{}", entry.to_csv_line(base_dir))?;
+            appendix.push_str(&entry.to_csv_line(base_dir));
+            appendix.push('\n');
             added_count += 1;
         } else {
             log::trace!("skipping duplicate: {}", entry.remote_url);
         }
     }
+
+    // Open archive for appending (create if doesn't exist)
+    let mut file = OpenOptions::new().create(true).append(true).open(archive_path)?;
+    file.write_all(appendix.as_bytes())?;
+    file.sync_all()?;
 
     log::info!("added {} entries to archive", added_count);
 

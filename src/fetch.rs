@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use anyhow::Context;
 use clap::Args;
 
 use crate::{archive, scan};
@@ -72,7 +72,8 @@ fn update_archive(archive_path: &Path, base_dir: &Path, dirs: &[PathBuf]) -> any
 
     // Load existing archive (or start empty)
     let mut existing: Vec<archive::Entry> = if archive_path.exists() {
-        archive::load_entries(archive_path, base_dir)?
+        archive::load_entries(archive_path, base_dir)
+            .with_context(|| format!("reading archive {}", archive_path.display()))?
     } else {
         Vec::new()
     };
@@ -97,15 +98,8 @@ fn update_archive(archive_path: &Path, base_dir: &Path, dirs: &[PathBuf]) -> any
     }
 
     // Rewrite archive
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(archive_path)?;
-
-    for entry in &existing {
-        writeln!(file, "{}", entry.to_csv_line(base_dir))?;
-    }
+    archive::write_entries_atomic(archive_path, &existing, base_dir)
+        .with_context(|| format!("writing archive {}", archive_path.display()))?;
 
     log::info!("updated archive: {} updated, {} added", updated, added);
     Ok(())

@@ -112,8 +112,14 @@ One-shot, straight from the shell on the NAS. `--user` must match the dataset ow
 dataset is mounted at `/data` because that is the image's working directory:
 
 ```bash
-sudo docker run --rm --user 1000:3001 -v /mnt/red-cluster1/backup/sources:/data repotool:latest fetch --base-dir /data --archive /data/repo-archive.txt /data/repos
+sudo docker run --rm --user 1000:3001 -v /mnt/red-cluster1/backup/sources:/data repotool:latest fetch --base-dir /data --archive /data/repo-archive.txt tmux.git
 ```
+
+`repo-archive.txt` lives inside the archive dataset, so the single `/data` mount covers both the
+repos and the archive. Keep it there rather than bind-mounting it from elsewhere: the archive is
+rewritten via a temp file plus `rename()`, which needs write permission on the *containing
+directory* — and a single-file bind mount does not expose one. Putting it in a dataset owned by
+1000 also sidesteps the permission problem that comes with a directory owned by another account.
 
 To avoid retyping the mount and user flags, copy `docker-compose.yml` to the NAS, set
 `ARCHIVE_PATH` / `REPOTOOL_UID` / `REPOTOOL_GID` in a `.env` beside it, and use:
@@ -139,3 +145,9 @@ output lands in the job's mail/log.
   on the NAS.
 - For `git@` remotes, mount a key into the container (`-v /mnt/red-cluster1/appdata/repotool/ssh:/home/repotool/.ssh:ro`)
   — the image includes `openssh-client` but carries no keys.
+- The archive is distributed to the other machines (the RPi running `serve`) by Syncthing. The NAS
+  is the only writer, so set its Syncthing folder to **Send Only** and the peers' to **Receive
+  Only**. That keeps a peer from pushing a change back — which would replace the file with one
+  owned by Syncthing's `apps` account (uid 568) and break the container's next write with
+  `Permission denied (os error 13)`. Syncthing replaces files rather than editing them, so the
+  ownership flip survives any `chown` you apply to the file itself.

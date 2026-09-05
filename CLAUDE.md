@@ -105,7 +105,9 @@ Runs `git fetch --all -p` on all repositories under one or more parent directori
 
 ### Shared Modules
 
-**`src/archive.rs`** — Data model and I/O for the CSV archive format. Defines `Entry` (the in-memory struct) and provides `load_entries`, `load_urls`, `to_csv_line`, and `from_csv_line`. Used by scan, grab, fetch, and serve.
+**`src/archive.rs`** — Data model and I/O for the CSV archive format. Defines `Entry` (the in-memory struct) and provides `load_entries`, `load_urls`, `to_csv_line`, `from_csv_line`, and `write_entries_atomic`. Used by scan, grab, fetch, and serve.
+
+`write_entries_atomic` writes a temp file next to the target and renames over it, so a reader never sees a partial archive. Use it for any full rewrite of the archive rather than truncating in place — the archive is replicated to other machines by Syncthing and read live by `serve`, both of which can otherwise observe a half-written file. It preserves the original file's mode across the rename and `fsync`s before renaming. Unit tested in the same module.
 
 **`src/git_url.rs`** — URL parsing utilities shared by clone and grab. Provides `extract_repo_name` (handles SSH and HTTPS formats) and `is_in_compare_list` / `filter_by_compare_list` (deduplication against existing archives). Includes unit tests for URL parsing.
 

@@ -26,3 +26,4 @@ gitlab = "0.1804.0"
 
 [dev-dependencies]
 rstest = "0.26"
+tempfile = "3.27.0"
