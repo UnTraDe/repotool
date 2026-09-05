@@ -131,8 +131,9 @@ sudo docker compose run --rm repotool fetch --base-dir /data /data/repos
 ## 4. Schedule recurring fetches (optional)
 
 Add a cron job under *System Settings → Advanced → Cron Jobs*, running as `root`, with the
-`docker run` command from step 3 as the command. Keep `RUST_LOG=info` (the image's default) so
-output lands in the job's mail/log.
+`docker run` command from step 3 as the command. The binary logs at info by default, so the
+fetch output lands in the job's mail/log without any extra configuration; set `RUST_LOG=debug` on
+the command if you need more.
 
 ## Notes
 

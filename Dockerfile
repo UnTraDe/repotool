@@ -44,7 +44,6 @@ RUN groupadd -g "${GID}" repotool \
 COPY target/release/repotool /usr/local/bin/repotool
 
 ENV HOME=/home/repotool \
-    RUST_LOG=info \
     GIT_TERMINAL_PROMPT=0
 
 WORKDIR /data

@@ -11,7 +11,8 @@ services:
     # Must match the owner of the dataset on the pool.
     user: "${REPOTOOL_UID:-1000}:${REPOTOOL_GID:-3001}"
     environment:
-      RUST_LOG: "${RUST_LOG:-info}"
+      # Passed through from the shell when set; the binary already defaults to info.
+      RUST_LOG:
     volumes:
       # Host path of the archive dataset on the pool -> /data in the container.
       - "${ARCHIVE_PATH:-/mnt/red-cluster1/backup/sources}:/data"
