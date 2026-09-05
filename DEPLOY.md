@@ -112,7 +112,7 @@ One-shot, straight from the shell on the NAS. `--user` must match the dataset ow
 dataset is mounted at `/data` because that is the image's working directory:
 
 ```bash
-sudo docker run --rm --user 1000:3001 -v /mnt/red-cluster1/backup/sources:/data repotool:latest fetch --base-dir /data --archive /data/repo-archive.txt tmux.git
+sudo docker run --rm --user 1000:3001 -v /mnt/red-cluster1/backup/sources:/data repotool:latest fetch --base-dir /data --archive /data/repo-archive.txt <folder>
 ```
 
 `repo-archive.txt` lives inside the archive dataset, so the single `/data` mount covers both the
