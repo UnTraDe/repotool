@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Check Repo Archive
 // @namespace    http://tampermonkey.net/
-// @version      0.3
+// @version      0.4
 // @description  Checks if the current GitHub or Hugging Face repository is in the archive
 // @author       You
 // @match        https://github.com/*/*
@@ -27,6 +27,47 @@ function transformHuggingfaceUrl(url) {
   const repo = pathSegments[2];
 
   return `${org}/${repo}`;
+}
+
+const ARCHIVE_PATH = "/data/archive.txt";
+const GRAB_COMMAND = `sudo docker run --rm --user 1000:3001 -v /mnt/red-cluster1/backup/sources:/data repotool:latest grab --base-dir /data --archive ${ARCHIVE_PATH} github`;
+
+function createCopyButton(label, buildCommand) {
+  const btn = document.createElement("button");
+  btn.textContent = label;
+  btn.style.cssText = `
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #238636;
+    border: 1px solid #2ea043;
+    border-radius: 6px;
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
+    width: 100%;
+    transition: background 0.2s;
+  `;
+  btn.onmouseover = () => (btn.style.background = "#2ea043");
+  btn.onmouseout = () => (btn.style.background = "#238636");
+  btn.onclick = () => {
+    navigator.clipboard
+      .writeText(buildCommand())
+      .then(() => {
+        btn.textContent = "Copied!";
+        setTimeout(() => {
+          btn.textContent = label;
+        }, 2000);
+      })
+      .catch((err) => {
+        console.error("Failed to copy:", err);
+        btn.textContent = "Failed to copy";
+        setTimeout(() => {
+          btn.textContent = label;
+        }, 2000);
+      });
+  };
+
+  return btn;
 }
 
 function createPanel(res, url, hostname) {
@@ -69,44 +110,50 @@ function createPanel(res, url, hostname) {
   title.innerHTML = `<span style="font-size: 20px;">${statusIcon}</span> ${statusText}`;
   panel.appendChild(title);
 
-  // Add copy command button for non-archived GitHub repos
-  if (!res.exists && hostname === "github.com" && url) {
-    const copyBtn = document.createElement("button");
-    copyBtn.textContent = "Copy grab command";
-    copyBtn.style.cssText = `
-      margin-top: 8px;
-      padding: 8px 12px;
-      background: #238636;
-      border: 1px solid #2ea043;
-      border-radius: 6px;
-      color: white;
-      font-size: 14px;
-      cursor: pointer;
-      width: 100%;
-      transition: background 0.2s;
-    `;
-    copyBtn.onmouseover = () => (copyBtn.style.background = "#2ea043");
-    copyBtn.onmouseout = () => (copyBtn.style.background = "#238636");
-    copyBtn.onclick = () => {
-      const command = `RUST_LOG=info repotool grab github single "${url}.git"`;
+  // Add copy command buttons for GitHub repos
+  if (hostname === "github.com" && url) {
+    const org = new URL(url).pathname.split("/")[1];
 
-      navigator.clipboard
-        .writeText(command)
-        .then(() => {
-          copyBtn.textContent = "Copied!";
-          setTimeout(() => {
-            copyBtn.textContent = "Copy grab command";
-          }, 2000);
-        })
-        .catch((err) => {
-          console.error("Failed to copy:", err);
-          copyBtn.textContent = "Failed to copy";
-          setTimeout(() => {
-            copyBtn.textContent = "Copy grab command";
-          }, 2000);
-        });
-    };
-    panel.appendChild(copyBtn);
+    if (!res.exists) {
+      panel.appendChild(
+        createCopyButton(
+          "Copy grab command",
+          () => `${GRAB_COMMAND} single "${url}.git"`,
+        ),
+      );
+    }
+
+    if (org) {
+      const compareLabel = document.createElement("label");
+      compareLabel.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 8px;
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      `;
+
+      const compareCheckbox = document.createElement("input");
+      compareCheckbox.type = "checkbox";
+      compareCheckbox.style.cssText = "margin: 0; cursor: pointer;";
+
+      compareLabel.appendChild(compareCheckbox);
+      compareLabel.appendChild(
+        document.createTextNode("--compare-file /data/archive.txt"),
+      );
+      panel.appendChild(compareLabel);
+
+      panel.appendChild(
+        createCopyButton("Copy org grab command", () => {
+          const compare = compareCheckbox.checked
+            ? ` --compare-file ${ARCHIVE_PATH}`
+            : "";
+          return `${GRAB_COMMAND} org "${org}"${compare}`;
+        }),
+      );
+    }
   }
 
   if (res.exists && res.metadata) {
