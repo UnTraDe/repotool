@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Check Repo Archive
 // @namespace    http://tampermonkey.net/
-// @version      0.4
+// @version      0.5
 // @description  Checks if the current GitHub or Hugging Face repository is in the archive
 // @author       You
 // @match        https://github.com/*/*
@@ -27,6 +27,35 @@ function transformHuggingfaceUrl(url) {
   const repo = pathSegments[2];
 
   return `${org}/${repo}`;
+}
+
+const PANEL_ID = "repo-checker-panel";
+
+// The panel lives at the end of <body>, outside anything the page owns, so a
+// re-render can drop it. Keep a handle on it and put it back if that happens.
+let currentPanel = null;
+let currentKey = null;
+let dismissedKey = null;
+
+function ensureAttached() {
+  if (!currentPanel || dismissedKey === currentKey) return;
+
+  if (!currentPanel.isConnected) {
+    console.debug("[repo-checker] panel left the DOM, re-attaching");
+    document.body.appendChild(currentPanel);
+  }
+}
+
+function watchForRemoval() {
+  new MutationObserver(ensureAttached).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  // SPA navigations on GitHub swap large subtrees; re-check once they settle.
+  ["turbo:render", "turbo:load", "soft-nav:end", "pjax:end", "pageshow"].forEach(
+    (event) => document.addEventListener(event, ensureAttached),
+  );
 }
 
 const ARCHIVE_PATH = "/data/archive.txt";
@@ -70,15 +99,9 @@ function createCopyButton(label, buildCommand) {
   return btn;
 }
 
-function createPanel(res, url, hostname) {
-  // Remove existing panel if any
-  const existingPanel = document.getElementById("repo-checker-panel");
-  if (existingPanel) {
-    existingPanel.remove();
-  }
-
+function buildPanel(res, url, hostname) {
   const panel = document.createElement("div");
-  panel.id = "repo-checker-panel";
+  panel.id = PANEL_ID;
   panel.style.cssText = `
     position: fixed;
     bottom: 20px;
@@ -107,7 +130,11 @@ function createPanel(res, url, hostname) {
 
   const statusIcon = res.exists ? "✓" : "✗";
   const statusText = res.exists ? "Repository Archived" : "Not Archived";
-  title.innerHTML = `<span style="font-size: 20px;">${statusIcon}</span> ${statusText}`;
+  const iconEl = document.createElement("span");
+  iconEl.style.fontSize = "20px";
+  iconEl.textContent = statusIcon;
+  title.appendChild(iconEl);
+  title.appendChild(document.createTextNode(statusText));
   panel.appendChild(title);
 
   // Add copy command buttons for GitHub repos
@@ -209,9 +236,35 @@ function createPanel(res, url, hostname) {
   `;
   closeBtn.onmouseover = () => (closeBtn.style.opacity = "1");
   closeBtn.onmouseout = () => (closeBtn.style.opacity = "0.6");
-  closeBtn.onclick = () => panel.remove();
+  closeBtn.onclick = () => {
+    dismissedKey = currentKey;
+    panel.remove();
+  };
   panel.appendChild(closeBtn);
 
+  return panel;
+}
+
+// Build the replacement first and swap it in only once it is complete, so a
+// failure mid-build leaves the existing panel up instead of nothing at all.
+function createPanel(res, url, hostname) {
+  let panel;
+
+  try {
+    panel = buildPanel(res, url, hostname);
+  } catch (err) {
+    console.error("[repo-checker] failed to build panel:", err, res);
+    return;
+  }
+
+  const existingPanel = document.getElementById(PANEL_ID);
+  if (existingPanel) {
+    existingPanel.remove();
+  }
+
+  currentPanel = panel;
+  currentKey = url;
+  dismissedKey = null;
   document.body.appendChild(panel);
 }
 
@@ -238,9 +291,13 @@ const cache = new Map();
 
     if (cache.has(transformedUrl)) {
       const cached = cache.get(transformedUrl);
+      const alreadyShown =
+        currentKey === transformedUrl &&
+        (dismissedKey === transformedUrl ||
+          (currentPanel !== null && currentPanel.isConnected));
 
-      if (cached !== null) {
-        createPanel(cache.get(transformedUrl), transformedUrl, hostname);
+      if (cached !== null && !alreadyShown) {
+        createPanel(cached, transformedUrl, hostname);
       }
 
       return;
@@ -281,15 +338,21 @@ const cache = new Map();
   }
 
   let lastUrl = window.location.href;
+  watchForRemoval();
   checkRepoInArchive(lastUrl);
 
-  // Detect URL changes from SPA navigation
+  // Detect URL changes from SPA navigation. GitHub fires several history calls
+  // per navigation, so coalesce them instead of reacting to each one.
+  let pendingCheck = null;
   const checkUrlChange = () => {
-    const currentUrl = window.location.href;
-    if (currentUrl !== lastUrl) {
-      lastUrl = currentUrl;
-      checkRepoInArchive(currentUrl);
-    }
+    clearTimeout(pendingCheck);
+    pendingCheck = setTimeout(() => {
+      const currentUrl = window.location.href;
+      if (currentUrl !== lastUrl) {
+        lastUrl = currentUrl;
+        checkRepoInArchive(currentUrl);
+      }
+    }, 150);
   };
 
   // Listen for history changes (back/forward buttons)
